@@ -101,6 +101,8 @@
   .seg button { font: 500 13px/1 var(--font-mono); padding: 9px 0; border: 0; background: none; color: var(--fg); cursor: pointer; }
   .seg button + button { border-left: 1px solid var(--line); }
   .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); }
+  .seg4 { grid-template-columns: repeat(4, 1fr); }
+  .seg4 button { font: 500 12px/1 var(--font-body); padding: 10px 0; }
   .inline { display: flex; gap: 8px; }
   .inline input[type="number"] { flex: 1; min-width: 0; font: 14px var(--font-mono); padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
   .btn { font: 500 13px/1 var(--font-body); padding: 9px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); cursor: pointer; white-space: nowrap; }
@@ -254,6 +256,20 @@
       <div class="field">
         <label style="display:flex; gap:8px; align-items:center; font-size:14px; font-weight:500"><input type="checkbox" id="pt-nee" checked style="accent-color: var(--accent)">光源を直接サンプリングする (NEE)</label>
         <p class="note">切ると、跳ね返った光線が偶然光源に当たったときしか光が届かず、同じサンプル数でもノイズがずっと多くなります。サンプルを重ねれば、どちらも同じ明るさに近づきます。</p>
+      </div>
+      <div class="field">
+        <div class="row"><span style="font-size:14px;font-weight:500">右の球のガラス</span></div>
+        <div class="seg seg4" role="group" aria-label="ガラスの色">
+          <button type="button" data-tint="0" aria-pressed="false">透明</button>
+          <button type="button" data-tint="1" aria-pressed="true">ビール</button>
+          <button type="button" data-tint="2" aria-pressed="false">エメラルド</button>
+          <button type="button" data-tint="3" aria-pressed="false">サファイア</button>
+        </div>
+      </div>
+      <div class="field">
+        <div class="row"><label for="pt-density">色の濃さ</label><output id="pt-density-out" for="pt-density"></output></div>
+        <input type="range" id="pt-density" min="0.25" max="3" step="0.05" value="1">
+        <p class="note">ガラスの中を通る距離が長いほど、色ごとに指数関数的に吸収されます (ランベルト・ベールの法則)。縁は淡く中心は濃く、床に落ちる光も同じ色に染まります。</p>
       </div>
       <div class="inline">
         <button type="button" class="btn" id="pt-pause">一時停止</button>
@@ -525,9 +541,9 @@
 
   // ---- パストレーシング: 累積バッファは Scala 側。1 フレーム 14 ms まで行を描き、描いた行だけ転送する
   const pt = { raf: 0, y: 0, passes: 0, statT: 0, statRays: 0, started: 0, ready: false };
-  state.pt = { depth: 8, nee: true, paused: false };
+  state.pt = { depth: 8, nee: true, paused: false, tint: 1, density: 1 };
   function ptRestart() {
-    wasm.ptSetup(W, H, 1, state.pt.depth, state.pt.nee ? 1 : 0);
+    wasm.ptSetup(W, H, 1, state.pt.depth, state.pt.nee ? 1 : 0, state.pt.tint, state.pt.density);
     pt.y = 0; pt.passes = 0; pt.statT = performance.now(); pt.statRays = 0; pt.started = performance.now(); pt.ready = true;
     ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
     $("st-ms").textContent = "–"; $("st-extra").textContent = "0 サンプル/画素";
@@ -574,6 +590,16 @@
   $("pt-nee").addEventListener("change", (e) => { state.pt.nee = e.target.checked; if (mode === "pt") ptRestart(); });
   $("pt-pause").addEventListener("click", () => { state.pt.paused = !state.pt.paused; syncPtOutputs(); });
   $("pt-restart").addEventListener("click", () => { if (mode === "pt") ptRestart(); });
+  document.querySelectorAll("[data-tint]").forEach((b) => b.addEventListener("click", () => {
+    document.querySelectorAll("[data-tint]").forEach((o) => o.setAttribute("aria-pressed", String(o === b)));
+    state.pt.tint = +b.dataset.tint;
+    if (mode === "pt") ptRestart();
+  }));
+  $("pt-density").addEventListener("input", (e) => {
+    state.pt.density = +e.target.value;
+    $("pt-density-out").textContent = `×${state.pt.density.toFixed(2)}`;
+    if (mode === "pt") ptRestart();
+  });
 
   const MODES = { rt: "raytracer", julia: "julia", fluid: "fluid", pt: "pathtrace" };
   function setMode(next) {
@@ -701,6 +727,7 @@
   syncRtOutputs(); syncJuliaOutputs(); updateExtra();
   $("f-iters").value = state.fluid.iters; $("f-vort").value = state.fluid.vort; $("f-fade").value = state.fluid.fadeStep;
   $("pt-depth").value = state.pt.depth; $("pt-depth-out").textContent = `${state.pt.depth} 回`;
+  $("pt-density").value = state.pt.density; $("pt-density-out").textContent = `×${state.pt.density.toFixed(2)}`;
   ctx.fillStyle = "#0e1219"; ctx.fillRect(0, 0, W, H);
   (async () => {
     try {

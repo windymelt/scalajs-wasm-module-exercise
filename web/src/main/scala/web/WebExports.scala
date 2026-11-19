@@ -75,8 +75,9 @@ object WebExports {
   private var pt: PathTracer = new PathTracer(1, 1, 0, 1, true)
 
   @WasmExport("ptSetup")
-  def ptSetup(w: Int, h: Int, seed: Int, maxDepth: Int, nee: Int): Unit =
-    pt = new PathTracer(w, h, seed, maxDepth, nee != 0)
+  /** tint: 0 透明, 1 ビール, 2 エメラルド, 3 サファイア。density: 色の濃さの倍率 */
+  def ptSetup(w: Int, h: Int, seed: Int, maxDepth: Int, nee: Int, tint: Int, density: Double): Unit =
+    pt = new PathTracer(w, h, seed, maxDepth, nee != 0, tint, density)
 
   @WasmExport("ptRenderRow")
   def ptRenderRow(y: Int): Unit = pt.renderRow(y)

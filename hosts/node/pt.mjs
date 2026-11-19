@@ -7,8 +7,10 @@ const save = (name) => {
   for (let i = 0; i < W * H; i++) { const v = e.ptPx(i); buf[i * 3] = v >> 16 & 255; buf[i * 3 + 1] = v >> 8 & 255; buf[i * 3 + 2] = v & 255; }
   writeFileSync(`${outDir}/${name}.ppm`, Buffer.concat([Buffer.from(`P6 ${W} ${H} 255\n`), buf]));
 };
-for (const [label, depth, nee, spp] of [["nee-16", 8, 1, 16], ["nonee-16", 8, 0, 16], ["nee-1bounce-16", 1, 1, 16], ["nee-256", 8, 1, 256]]) {
-  e.ptSetup(W, H, 7, depth, nee);
+const runs = [["nee-16", 8, 1, 16, 0], ["nonee-16", 8, 0, 16, 0], ["nee-1bounce-16", 1, 1, 16, 0], ["nee-256", 8, 1, 256, 0], ["beer-256", 8, 1, 256, 1]];
+const only = process.argv[4];
+for (const [label, depth, nee, spp, tint] of runs.filter((r) => !only || r[0] === only)) {
+  e.ptSetup(W, H, 7, depth, nee, tint, 1.0);
   const t0 = performance.now();
   for (let s = 0; s < spp; s++) for (let y = 0; y < H; y++) e.ptRenderRow(y);
   const ms = performance.now() - t0;

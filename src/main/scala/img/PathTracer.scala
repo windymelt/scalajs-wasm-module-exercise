@@ -8,13 +8,14 @@ import java.util.Random
  *  - 拡散面ではコサイン重み付きで次の方向を選ぶ (単位円板の点を持ち上げる Malley の方法なので三角関数が要らない)
  *  - nee = true なら、拡散面ごとに天井の面光源を直接サンプリングする (Next Event Estimation)
  *  - ロシアンルーレットで経路を確率的に打ち切る
+ *  - ガラスの中を進んだ光は、ランベルト・ベールの法則で色ごとに exp(-σ·距離) の割合で吸収される
  *
  *  ホットループではオブジェクトを一切確保しない。ベクトルは Double のローカル変数とフィールドで持つ。
  *
  *  座標系: 箱は x ∈ [0, 160], y ∈ [0, 100], z ∈ [0, 100] で、手前 (z = 100) が開いている。
  *  カメラは箱の外 (z = 260) から -z 方向を見て、画角は開口部にぴったり合わせる。
  */
-final class PathTracer(val w: Int, val h: Int, seed: Int, maxDepth: Int, nee: Boolean) {
+final class PathTracer(val w: Int, val h: Int, seed: Int, maxDepth: Int, nee: Boolean, glassTint: Int = 0, density: Double = 1.0) {
   private val rnd = new Random(seed.toLong)
   private final val Eps = 1e-4
   private final val InvPi = 1.0 / MathX.Pi
@@ -38,6 +39,18 @@ final class PathTracer(val w: Int, val h: Int, seed: Int, maxDepth: Int, nee: Bo
   private val scr = Array(0.97, 0.98, 0.95)
   private val scg = Array(0.97, 0.98, 0.72)
   private val scb = Array(0.97, 0.98, 0.18)
+
+  // ガラスの吸収係数。「直径 44 の玉を通り抜けたときに各色が何割残るか」から逆算する
+  private val (sigR, sigG, sigB) = {
+    val (tr, tg, tb) = glassTint match {
+      case 1 => (0.92, 0.55, 0.12) // ビール
+      case 2 => (0.22, 0.85, 0.45) // エメラルド
+      case 3 => (0.18, 0.42, 0.95) // サファイア
+      case _ => (1.0, 1.0, 1.0)    // 透明
+    }
+    def sigma(t: Double): Double = -MathX.log(t) / 44.0 * density
+    (sigma(tr), sigma(tg), sigma(tb))
+  }
 
   // ---- 交差判定の結果 (フィールドで受け渡して確保を避ける)
   // obj: 0..2 球, 10: 床, 11: 天井, 12: 奥, 13: 開口部から外へ抜けた, 14: 左, 15: 右
@@ -181,10 +194,13 @@ final class PathTracer(val w: Int, val h: Int, seed: Int, maxDepth: Int, nee: Bo
         case _ => // ガラス (屈折率 1.5、フレネルは Schlick 近似)
           var cosI = -(dx * nx + dy * ny + dz * nz)
           var eta = 1.0 / 1.5
-          if (cosI < 0) { // 内側から外へ
+          if (cosI < 0) { // 内側から外へ: 直前の区間 (長さ t) はガラスの中を通ってきた
             nx = -nx; ny = -ny; nz = -nz
             cosI = -cosI
             eta = 1.5
+            if (sigR > 0 || sigG > 0 || sigB > 0) {
+              tr *= MathX.exp(-sigR * t); tg *= MathX.exp(-sigG * t); tb *= MathX.exp(-sigB * t)
+            }
           }
           val k = 1 - eta * eta * (1 - cosI * cosI)
           val r0 = (1 - 1.5) / (1 + 1.5)
