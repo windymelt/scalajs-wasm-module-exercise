@@ -1,0 +1,733 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>:root{color-scheme:light}body{margin:0}[hidden]{display:none!important}</style>
+</head>
+<body>
+<title>Scala Wasm Renderer</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+JP:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  /* Layout: 左に暗室のような描画ステージ、右に計器盤のような操作パネル。860px 未満で縦積み */
+  :root {
+    --bg: #f3f4f7;
+    --surface: #ffffff;
+    --fg: #161a22;
+    --muted: #5a6271;
+    --line: #dce0e7;
+    --accent: #c4372c;
+    --accent-fg: #ffffff;
+    --stage: #0e1219;
+    --ink: #1b2333;
+    --paper: #eceef3;
+    --font-body: "IBM Plex Sans JP", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1218; --surface: #171b23; --fg: #e6e9ef; --muted: #9aa2b1; --line: #2a303b;
+      --accent: #f06a5b; --accent-fg: #1b0c0a; --stage: #07090d; --ink: #e8ebf1; --paper: #151a23;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1218; --surface: #171b23; --fg: #e6e9ef; --muted: #9aa2b1; --line: #2a303b;
+    --accent: #f06a5b; --accent-fg: #1b0c0a; --stage: #07090d; --ink: #e8ebf1; --paper: #151a23;
+    color-scheme: dark;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-body);
+    font-size: 15px;
+    line-height: 1.7;
+  }
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding-block: 28px 48px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    display: grid;
+    gap: 22px;
+  }
+  .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+  header { display: grid; gap: 6px; }
+  .eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; color: var(--accent); }
+  h1 { margin: 0; font-size: clamp(28px, 4.2vw, 40px); line-height: 1.2; font-weight: 700; text-wrap: balance; }
+  .lede { margin: 0; color: var(--muted); max-width: 62ch; }
+  .lede code { font-family: var(--font-mono); font-size: 0.92em; color: var(--fg); }
+
+  .modes { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 3px; background: var(--surface); justify-self: start; }
+  .modes button {
+    font: 500 14px/1 var(--font-body); color: var(--muted); background: none; border: 0;
+    padding: 9px 18px; border-radius: 999px; cursor: pointer;
+  }
+  .modes button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
+  @media (max-width: 560px) {
+    .modes { display: grid; grid-template-columns: 1fr 1fr; justify-self: stretch; border-radius: 14px; }
+    .modes button { border-radius: 11px; padding: 10px 8px; }
+  }
+  button:focus-visible, input:focus-visible, canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .studio { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; align-items: start; }
+  @media (max-width: 860px) { .studio { grid-template-columns: minmax(0, 1fr); } }
+
+  .stage { display: grid; gap: 10px; min-width: 0; }
+  .frame { position: relative; background: var(--stage); border-radius: 6px; overflow: hidden; aspect-ratio: 16 / 10; max-width: 100%; }
+  #stage { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+  #stage.dragging { cursor: grabbing; }
+  .bar { position: absolute; left: 0; bottom: 0; height: 3px; width: 0; background: var(--accent); }
+  .hint { position: absolute; right: 10px; top: 10px; font: 12px/1 var(--font-mono); color: #cfd5df; background: rgba(8, 10, 14, 0.55); padding: 6px 9px; border-radius: 4px; pointer-events: none; }
+  .status { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--muted); }
+  .status b { color: var(--fg); font-weight: 600; }
+  .pill { font: 600 11px/1 var(--font-mono); letter-spacing: 0.05em; padding: 5px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .pill.busy { border-color: var(--accent); color: var(--accent); }
+
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 18px; display: grid; gap: 18px; min-width: 0; }
+  .panel h2 { margin: 0; font-size: 12px; letter-spacing: 0.08em; color: var(--muted); font-weight: 500; }
+  .field { display: grid; gap: 4px; }
+  .field .row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .field label { font-size: 14px; font-weight: 500; }
+  .field output { font-family: var(--font-mono); font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  input[type="range"] { width: 100%; accent-color: var(--accent); margin: 0; }
+  .seg { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .seg button { font: 500 13px/1 var(--font-mono); padding: 9px 0; border: 0; background: none; color: var(--fg); cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); }
+  .inline { display: flex; gap: 8px; }
+  .inline input[type="number"] { flex: 1; min-width: 0; font: 14px var(--font-mono); padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+  .btn { font: 500 13px/1 var(--font-body); padding: 9px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); cursor: pointer; white-space: nowrap; }
+  .btn:hover { border-color: var(--muted); }
+
+  .map { position: relative; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); aspect-ratio: 3 / 2; max-width: 100%; }
+  #map { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+  .creadout { font: 600 15px var(--font-mono); }
+  .presets { display: flex; flex-wrap: wrap; gap: 6px; }
+  .presets .btn { padding: 7px 10px; }
+  .note { margin: 0; font-size: 13px; color: var(--muted); }
+
+  .error { border: 1px solid var(--accent); color: var(--fg); background: var(--surface); border-radius: 8px; padding: 14px 16px; }
+  .error p { margin: 0; }
+  .error .mono { color: var(--accent); font-size: 13px; word-break: break-word; }
+
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; border-top: 1px solid var(--line); padding-top: 22px; }
+  .facts h3 { margin: 0 0 6px; font-size: 15px; }
+  .facts p { margin: 0; font-size: 14px; color: var(--muted); }
+  .facts code { font-family: var(--font-mono); font-size: 0.9em; color: var(--fg); }
+  .step { font: 600 12px var(--font-mono); color: var(--accent); margin-bottom: 4px; display: block; }
+  .exports { font-family: var(--font-mono); font-size: 13px; color: var(--fg); overflow-wrap: anywhere; }
+</style>
+
+<div class="wrap">
+  <header>
+    <span class="eyebrow">SCALA.JS 1.23 · ModuleKind.WasmModule</span>
+    <h1>Scala Wasm Renderer</h1>
+    <p class="lede">光線の追跡も、フラクタルも、流体の計算も、Scala 2.13 から生成した <code id="lede-size">76 KB</code> の <code>main.wasm</code> が担当しています。JavaScript はマウスの動きを渡し、返ってきた画素を canvas に置くだけです。</p>
+  </header>
+
+  <div class="modes" role="group" aria-label="描画するもの">
+    <button type="button" id="mode-rt" aria-pressed="true">レイトレーサー</button>
+    <button type="button" id="mode-julia" aria-pressed="false">ジュリア集合</button>
+    <button type="button" id="mode-fluid" aria-pressed="false">流体</button>
+    <button type="button" id="mode-pt" aria-pressed="false">パストレーシング</button>
+  </div>
+
+  <div id="error" class="error" hidden>
+    <p>このブラウザでは <code>main.wasm</code> を読み込めませんでした。Scala.js の Wasm 出力は Wasm GC と例外処理を使うため、Chrome 137、Firefox 134、Safari 26 以降で開いてください。</p>
+    <p class="mono" id="error-detail"></p>
+  </div>
+
+  <div class="studio">
+    <section class="stage" aria-label="描画結果">
+      <div class="frame">
+        <canvas id="stage" width="640" height="400" tabindex="0" aria-label="描画結果。ドラッグで視点を動かせます"></canvas>
+        <div class="bar" id="bar"></div>
+        <div class="hint" id="hint">ドラッグでカメラを回す</div>
+      </div>
+      <div class="status">
+        <span class="pill" id="pill">読み込み中</span>
+        <span>Scala 側の計算 <b class="mono" id="st-ms">–</b></span>
+        <span><b class="mono">640×400</b></span>
+        <span id="st-extra" class="mono"></span>
+      </div>
+    </section>
+
+    <aside class="panel" id="panel-rt" aria-label="レイトレーサーの設定">
+      <h2>カメラと光源</h2>
+      <div class="field">
+        <div class="row"><label for="rt-yaw">カメラの周回</label><output id="rt-yaw-out" for="rt-yaw"></output></div>
+        <input type="range" id="rt-yaw" min="-90" max="90" step="1" value="18">
+      </div>
+      <div class="field">
+        <div class="row"><label for="rt-height">カメラの高さ</label><output id="rt-height-out" for="rt-height"></output></div>
+        <input type="range" id="rt-height" min="0.3" max="4.5" step="0.05" value="1.7">
+      </div>
+      <div class="field">
+        <div class="row"><label for="rt-light">光源の向き</label><output id="rt-light-out" for="rt-light"></output></div>
+        <input type="range" id="rt-light" min="-180" max="180" step="1" value="-39">
+      </div>
+      <div class="field">
+        <div class="row"><span style="font-size:14px;font-weight:500">1 画素あたりのサンプル数</span></div>
+        <div class="seg" role="group" aria-label="サンプル数">
+          <button type="button" data-spp="1" aria-pressed="false">1</button>
+          <button type="button" data-spp="4" aria-pressed="true">4</button>
+          <button type="button" data-spp="16" aria-pressed="false">16</button>
+        </div>
+        <p class="note">サンプルを増やすと、ソフトシャドウのざらつきが減ります。</p>
+      </div>
+      <div class="field">
+        <div class="row"><label for="rt-seed">乱数シード</label></div>
+        <div class="inline">
+          <input type="number" id="rt-seed" value="7" min="0" max="2147483647">
+          <button type="button" class="btn" id="rt-reroll">振り直す</button>
+        </div>
+        <p class="note">シードが同じなら、どの環境でも画素単位で同じ絵になります。</p>
+      </div>
+    </aside>
+
+    <aside class="panel" id="panel-julia" aria-label="ジュリア集合の設定" hidden>
+      <h2>パラメータ c</h2>
+      <div class="map"><canvas id="map" width="240" height="160" aria-label="マンデルブロ集合のマップ。クリックで c を選びます"></canvas></div>
+      <div class="creadout" id="c-out">c = −0.800 + 0.156i</div>
+      <p class="note">マップはマンデルブロ集合です。塗りつぶされた集合の内側を選ぶと、ジュリア集合はひとつながりの形になります。外側を選ぶと、ばらばらの点の集まりになります。</p>
+      <div class="presets" role="group" aria-label="名前のある c">
+        <button type="button" class="btn" data-c="-0.8,0.156">渦</button>
+        <button type="button" class="btn" data-c="-0.123,0.745">ドゥアディのウサギ</button>
+        <button type="button" class="btn" data-c="0,1">デンドライト</button>
+        <button type="button" class="btn" data-c="-0.391,-0.587">ジーゲル円板</button>
+        <button type="button" class="btn" data-c="-0.75,0">サンマルコ</button>
+      </div>
+      <div class="field">
+        <div class="row"><label for="j-zoom">拡大率</label><output id="j-zoom-out" for="j-zoom"></output></div>
+        <input type="range" id="j-zoom" min="0" max="100" step="1" value="0">
+      </div>
+      <button type="button" class="btn" id="j-reset">表示位置を中央に戻す</button>
+    </aside>
+
+    <aside class="panel" id="panel-fluid" aria-label="流体の設定" hidden>
+      <h2>ソルバー</h2>
+      <div class="field">
+        <div class="row"><span style="font-size:14px;font-weight:500">格子の解像度</span></div>
+        <div class="seg" role="group" aria-label="格子の解像度">
+          <button type="button" data-res="128" aria-pressed="false">128×80</button>
+          <button type="button" data-res="192" aria-pressed="true">192×120</button>
+          <button type="button" data-res="256" aria-pressed="false">256×160</button>
+        </div>
+      </div>
+      <div class="field">
+        <div class="row"><label for="f-iters">圧力の反復回数</label><output id="f-iters-out" for="f-iters"></output></div>
+        <input type="range" id="f-iters" min="1" max="60" step="1" value="20">
+        <p class="note">減らすと速くなる代わりに、流体が非圧縮でなくなり、膨らんだり縮んだりします。</p>
+      </div>
+      <div class="field">
+        <div class="row"><label for="f-vort">渦の強調</label><output id="f-vort-out" for="f-vort"></output></div>
+        <input type="range" id="f-vort" min="0" max="1" step="0.01" value="0.35">
+        <p class="note">渦度閉じ込め。数値計算でぼやけて消える小さな渦を補います。</p>
+      </div>
+      <div class="field">
+        <div class="row"><label for="f-fade">色の残り方</label><output id="f-fade-out" for="f-fade"></output></div>
+        <input type="range" id="f-fade" min="0" max="100" step="1" value="42">
+      </div>
+      <div class="inline" style="align-items:center; justify-content:space-between; flex-wrap:wrap">
+        <label style="display:flex; gap:8px; align-items:center; font-size:14px; font-weight:500"><input type="checkbox" id="f-auto" checked style="accent-color: var(--accent)">自動の噴流</label>
+        <div class="inline">
+          <button type="button" class="btn" id="f-pause">一時停止</button>
+          <button type="button" class="btn" id="f-clear">消去</button>
+        </div>
+      </div>
+    </aside>
+
+    <aside class="panel" id="panel-pt" aria-label="パストレーシングの設定" hidden>
+      <h2>光の経路</h2>
+      <div class="field">
+        <div class="row"><label for="pt-depth">跳ね返りの上限</label><output id="pt-depth-out" for="pt-depth"></output></div>
+        <input type="range" id="pt-depth" min="1" max="12" step="1" value="8">
+        <p class="note">1 回にすると光源からの直接光だけになります。天井は真っ暗になり、鏡とガラスの球は黒く、壁の色も床ににじみません。</p>
+      </div>
+      <div class="field">
+        <label style="display:flex; gap:8px; align-items:center; font-size:14px; font-weight:500"><input type="checkbox" id="pt-nee" checked style="accent-color: var(--accent)">光源を直接サンプリングする (NEE)</label>
+        <p class="note">切ると、跳ね返った光線が偶然光源に当たったときしか光が届かず、同じサンプル数でもノイズがずっと多くなります。サンプルを重ねれば、どちらも同じ明るさに近づきます。</p>
+      </div>
+      <div class="inline">
+        <button type="button" class="btn" id="pt-pause">一時停止</button>
+        <button type="button" class="btn" id="pt-restart">最初から</button>
+      </div>
+      <p class="note">ガラス玉の下に集まる光の模様 (コースティクス) と、赤と青の壁の色が床ににじむ様子は、光の経路を追うだけで自然に現れます。</p>
+    </aside>
+  </div>
+
+  <section class="facts" aria-label="仕組み">
+    <div>
+      <span class="step">1 · ビルド</span>
+      <h3>JS の接着コードがない .wasm</h3>
+      <p><code>ModuleKind.WasmModule</code> でリンクすると、出力は <code>main.wasm</code> だけになります。このモジュールのインポートは <b class="mono" id="f-imports">–</b> 件です。</p>
+    </div>
+    <div>
+      <span class="step">2 · 描画</span>
+      <h3>1 行ずつ、1 フレーム 14 ms まで</h3>
+      <p><code>rtSetup(...)</code> などで条件を渡し、<code>renderRow(y)</code> を時間の許す限り呼びます。操作中は 160×100 の下書きを先に出します。</p>
+    </div>
+    <div>
+      <span class="step">3 · 受け渡し</span>
+      <h3>画素は <code>px(i)</code> で 1 つずつ</h3>
+      <p>配列は境界を越えるたびにコピーされ、JS からは中身を読めません。そこで画素は整数で 1 つずつ受け取ります。25 万画素で数ミリ秒です。</p>
+    </div>
+    <div>
+      <span class="step">流体</span>
+      <h3>毎フレーム new をしない</h3>
+      <p>Stam の Stable Fluids を Scala で実装しています。ホットループでは <code>Array[Double]</code> を使い回します。JS 以外の Wasm ランタイムでは、オブジェクトの確保が特に重いためです。</p>
+    </div>
+    <div>
+      <span class="step">パストレーシング</span>
+      <h3>三角関数なしで半球を選ぶ</h3>
+      <p>拡散面では、単位円板から選んだ点を半球へ持ち上げて、コサイン重み付きの方向を作ります (Malley の方法)。sin も cos も使わずに済みます。</p>
+    </div>
+    <div>
+      <span class="step">補足</span>
+      <h3>cos と log は自前実装</h3>
+      <p><code>Math.cos</code> や <code>Math.log</code> は WasmModule ではリンクできません。テイラー展開と浮動小数点のビット操作で書き直しています。</p>
+    </div>
+    <div style="grid-column: 1 / -1; min-width: 0">
+      <span class="step">モジュールの中身</span>
+      <div class="exports" id="f-exports">–</div>
+    </div>
+  </section>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const W = 640, H = 400, PW = 160, PH = 100, MW = 240, MH = 160;
+  const stage = $("stage"), ctx = stage.getContext("2d");
+  const off = document.createElement("canvas"); off.width = PW; off.height = PH;
+  const offCtx = off.getContext("2d");
+  const map = $("map"), mapCtx = map.getContext("2d");
+  const mapBase = document.createElement("canvas"); mapBase.width = MW; mapBase.height = MH;
+  const mapBaseCtx = mapBase.getContext("2d");
+
+  let wasm = null;
+  let mode = "rt";
+  let gen = 0;
+  let fullTimer = 0;
+  const state = {
+    rt: { yaw: 18, height: 1.7, light: -39, spp: 4, seed: 7 },
+    julia: { cr: -0.8, ci: 0.156, zoomStep: 0, cx: 0, cy: 0 },
+    fluid: { res: 192, iters: 20, vort: 0.35, fadeStep: 42, auto: !matchMedia("(prefers-reduced-motion: reduce)").matches, paused: false },
+  };
+  const zoomOf = (step) => Math.pow(10, step / 40);
+  /** 色が半分に薄れるまでのフレーム数 (20〜2000) と、1 ステップあたりの減衰係数 */
+  const halfLifeOf = (step) => 20 * Math.pow(10, step / 50);
+  const fadeOf = (step) => Math.pow(0.5, 1 / halfLifeOf(step));
+
+  // ---- 画素の受け渡し: 0xRRGGBB -> RGBA (リトルエンディアンの Uint32 では ABGR)
+  function copyRows(u32, w, y0, rows) {
+    const px = wasm.px;
+    let src = y0 * w, dst = 0;
+    for (let i = 0, n = w * rows; i < n; i++) {
+      const v = px(src++);
+      u32[dst++] = 0xff000000 | ((v & 0xff) << 16) | (v & 0xff00) | ((v >>> 16) & 0xff);
+    }
+  }
+
+  function setup(w, h, final) {
+    if (mode === "rt") {
+      const s = state.rt;
+      wasm.rtSetup(w, h, final ? s.spp : 1, s.seed | 0, s.yaw, s.height, s.light);
+    } else {
+      const s = state.julia;
+      wasm.juliaSetup(w, h, s.cr, s.ci, zoomOf(s.zoomStep), s.cx, s.cy);
+    }
+  }
+
+  function setBusy(busy, text) {
+    const pill = $("pill");
+    pill.textContent = text;
+    pill.classList.toggle("busy", busy);
+  }
+
+  function preview() {
+    setup(PW, PH, false);
+    for (let y = 0; y < PH; y++) wasm.renderRow(y);
+    const img = offCtx.createImageData(PW, PH);
+    copyRows(new Uint32Array(img.data.buffer), PW, 0, PH);
+    offCtx.putImageData(img, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(off, 0, 0, W, H);
+  }
+
+  function startFull() {
+    const my = ++gen;
+    setup(W, H, true);
+    let y = 0, renderMs = 0;
+    setBusy(true, "描画中 0%");
+    const step = () => {
+      if (my !== gen) return;
+      const y0 = y, start = performance.now();
+      while (y < H && performance.now() - start < 14) {
+        const t = performance.now();
+        wasm.renderRow(y++);
+        renderMs += performance.now() - t;
+      }
+      const img = ctx.createImageData(W, y - y0);
+      copyRows(new Uint32Array(img.data.buffer), W, y0, y - y0);
+      ctx.putImageData(img, 0, y0);
+      const pct = Math.round((y / H) * 100);
+      $("bar").style.width = pct + "%";
+      if (y < H) {
+        setBusy(true, `描画中 ${pct}%`);
+        requestAnimationFrame(step);
+      } else {
+        setBusy(false, "完了");
+        $("st-ms").textContent = `${Math.round(renderMs)} ms`;
+        $("bar").style.width = "0";
+      }
+    };
+    requestAnimationFrame(step);
+  }
+
+  /** パラメータが変わったら: 先に下書き、手が止まったら本描画 */
+  function request(delay = 220) {
+    if (!wasm || mode === "fluid" || mode === "pt") return;
+    gen++;
+    preview();
+    setBusy(true, "下書き");
+    $("bar").style.width = "0";
+    clearTimeout(fullTimer);
+    fullTimer = setTimeout(startFull, delay);
+    updateExtra();
+  }
+
+  function updateExtra() {
+    $("st-extra").textContent = mode === "rt"
+      ? `${state.rt.spp} サンプル/画素 · seed ${state.rt.seed}`
+      : `2×2 スーパーサンプリング · 最大 400 回反復`;
+  }
+
+  // ---- マンデルブロ集合のマップ
+  function hexToInt(name) {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    const m = /^#?([0-9a-f]{6})$/i.exec(v);
+    return m ? parseInt(m[1], 16) : 0;
+  }
+  function drawMapBase() {
+    gen++; // 進行中の本描画を止める (Scala 側の描画ジョブは 1 つだけ)
+    wasm.mandelSetup(MW, MH, hexToInt("--ink"), hexToInt("--paper"));
+    for (let y = 0; y < MH; y++) wasm.renderRow(y);
+    const img = mapBaseCtx.createImageData(MW, MH);
+    copyRows(new Uint32Array(img.data.buffer), MW, 0, MH);
+    mapBaseCtx.putImageData(img, 0, 0);
+  }
+  function drawMap() {
+    mapCtx.drawImage(mapBase, 0, 0);
+    const { cr, ci } = state.julia;
+    const x = ((cr + 2.2) / 3.0) * MW, y = ((1.0 - ci) / 2.0) * MH;
+    mapCtx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
+    mapCtx.lineWidth = 2;
+    mapCtx.beginPath(); mapCtx.arc(x, y, 6, 0, Math.PI * 2); mapCtx.stroke();
+    mapCtx.beginPath(); mapCtx.moveTo(x - 11, y); mapCtx.lineTo(x - 7, y); mapCtx.moveTo(x + 7, y); mapCtx.lineTo(x + 11, y);
+    mapCtx.moveTo(x, y - 11); mapCtx.lineTo(x, y - 7); mapCtx.moveTo(x, y + 7); mapCtx.lineTo(x, y + 11); mapCtx.stroke();
+    const sign = ci < 0 ? "−" : "+";
+    const re = (cr < 0 ? "−" : "") + Math.abs(cr).toFixed(3);
+    $("c-out").textContent = `c = ${re} ${sign} ${Math.abs(ci).toFixed(3)}i`;
+  }
+
+  // ---- UI
+  function syncRtOutputs() {
+    const s = state.rt;
+    $("rt-yaw-out").textContent = `${s.yaw > 0 ? "+" : ""}${Math.round(s.yaw)}°`;
+    $("rt-height-out").textContent = s.height.toFixed(2);
+    $("rt-light-out").textContent = `${Math.round(s.light)}°`;
+    $("rt-yaw").value = s.yaw; $("rt-height").value = s.height;
+  }
+  function syncJuliaOutputs() {
+    $("j-zoom-out").textContent = `×${zoomOf(state.julia.zoomStep).toFixed(zoomOf(state.julia.zoomStep) < 10 ? 2 : 0)}`;
+  }
+
+  // ---- 流体: 毎フレーム Scala 側で 1 ステップ進め、格子をそのまま canvas に引き伸ばす
+  const fl = { nx: 0, ny: 0, cv: document.createElement("canvas"), cx: null, img: null, u32: null, raf: 0, t: 0, ema: 0, frames: 0, fpsT: 0, fps: 0, pending: [] };
+  function fluidInit() {
+    fl.nx = state.fluid.res; fl.ny = Math.round(fl.nx * 0.625);
+    wasm.fluidInit(fl.nx, fl.ny);
+    fl.cv.width = fl.nx; fl.cv.height = fl.ny;
+    fl.cx = fl.cv.getContext("2d");
+    fl.img = fl.cx.createImageData(fl.nx, fl.ny);
+    fl.u32 = new Uint32Array(fl.img.data.buffer);
+  }
+  function hsv(h, s, v) {
+    const f = (n) => { const k = (n + h * 6) % 6; return v - v * s * Math.max(0, Math.min(k, 4 - k, 1)); };
+    return [f(5), f(3), f(1)];
+  }
+  function fluidFrame(now) {
+    if (mode !== "fluid") return;
+    fl.raf = requestAnimationFrame(fluidFrame);
+    const s = state.fluid, nx = fl.nx, ny = fl.ny, k = nx / 256;
+    if (!s.paused && s.auto) {
+      const a = fl.t * 0.01;
+      const [r1, g1, b1] = hsv(0.03 + 0.05 * Math.sin(a), 0.85, 0.95);
+      const [r2, g2, b2] = hsv(0.58 + 0.06 * Math.sin(a * 1.3), 0.8, 0.95);
+      const lift = 2.6 + 0.8 * Math.sin(a * 0.7);
+      wasm.fluidSplat(nx * 0.12, ny * 0.875, 2.2 * k, -lift * k, r1, g1, b1, 7 * k);
+      wasm.fluidSplat(nx * 0.88, ny * 0.875, -2.2 * k, -lift * k, r2, g2, b2, 7 * k);
+    }
+    for (const p of fl.pending) wasm.fluidSplat(p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]);
+    fl.pending.length = 0;
+    if (!s.paused) {
+      fl.t++;
+      const t0 = performance.now();
+      wasm.fluidStep(1.0, s.iters, s.vort, fadeOf(s.fadeStep), 0.998);
+      const dt = performance.now() - t0;
+      fl.ema = fl.ema ? fl.ema * 0.9 + dt * 0.1 : dt;
+    }
+    wasm.fluidRender(hexToInt("--stage"));
+    const px = wasm.fluidPx, u32 = fl.u32;
+    for (let i = 0, n = nx * ny; i < n; i++) {
+      const v = px(i);
+      u32[i] = 0xff000000 | ((v & 0xff) << 16) | (v & 0xff00) | ((v >>> 16) & 0xff);
+    }
+    fl.cx.putImageData(fl.img, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(fl.cv, 0, 0, W, H);
+    fl.frames++;
+    if (now - fl.fpsT > 500) {
+      fl.fps = Math.round((fl.frames * 1000) / (now - fl.fpsT));
+      fl.frames = 0; fl.fpsT = now;
+      $("st-ms").textContent = `${fl.ema.toFixed(1)} ms/ステップ`;
+      $("st-extra").textContent = `${nx}×${ny} 格子 · ${s.paused ? "停止中" : fl.fps + " fps"}`;
+    }
+  }
+  function syncFluidOutputs() {
+    const s = state.fluid, hl = halfLifeOf(s.fadeStep);
+    $("f-iters-out").textContent = `${s.iters} 回`;
+    $("f-vort-out").textContent = s.vort.toFixed(2);
+    $("f-fade-out").textContent = `半減まで ${Math.round(hl)} フレーム`;
+    $("f-pause").textContent = s.paused ? "再開" : "一時停止";
+    $("f-auto").checked = s.auto;
+    setBusy(!s.paused, s.paused ? "一時停止" : "実行中");
+  }
+  document.querySelectorAll("[data-res]").forEach((b) => b.addEventListener("click", () => {
+    document.querySelectorAll("[data-res]").forEach((o) => o.setAttribute("aria-pressed", String(o === b)));
+    state.fluid.res = +b.dataset.res; fluidInit(); fl.ema = 0;
+  }));
+  $("f-iters").addEventListener("input", (e) => { state.fluid.iters = +e.target.value; fl.ema = 0; syncFluidOutputs(); });
+  $("f-vort").addEventListener("input", (e) => { state.fluid.vort = +e.target.value; syncFluidOutputs(); });
+  $("f-fade").addEventListener("input", (e) => { state.fluid.fadeStep = +e.target.value; syncFluidOutputs(); });
+  $("f-auto").addEventListener("change", (e) => { state.fluid.auto = e.target.checked; });
+  $("f-pause").addEventListener("click", () => { state.fluid.paused = !state.fluid.paused; syncFluidOutputs(); });
+  $("f-clear").addEventListener("click", () => { if (wasm) wasm.fluidClear(); });
+
+  // ---- パストレーシング: 累積バッファは Scala 側。1 フレーム 14 ms まで行を描き、描いた行だけ転送する
+  const pt = { raf: 0, y: 0, passes: 0, statT: 0, statRays: 0, started: 0, ready: false };
+  state.pt = { depth: 8, nee: true, paused: false };
+  function ptRestart() {
+    wasm.ptSetup(W, H, 1, state.pt.depth, state.pt.nee ? 1 : 0);
+    pt.y = 0; pt.passes = 0; pt.statT = performance.now(); pt.statRays = 0; pt.started = performance.now(); pt.ready = true;
+    ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
+    $("st-ms").textContent = "–"; $("st-extra").textContent = "0 サンプル/画素";
+  }
+  function ptBlit(y0, n) {
+    if (n <= 0) return;
+    const img = ctx.createImageData(W, n);
+    const u32 = new Uint32Array(img.data.buffer);
+    const px = wasm.ptPx;
+    for (let i = 0, src = y0 * W, total = W * n; i < total; i++) {
+      const v = px(src++);
+      u32[i] = 0xff000000 | ((v & 0xff) << 16) | (v & 0xff00) | ((v >>> 16) & 0xff);
+    }
+    ctx.putImageData(img, 0, y0);
+  }
+  function ptFrame(now) {
+    if (mode !== "pt") return;
+    pt.raf = requestAnimationFrame(ptFrame);
+    if (state.pt.paused) return;
+    const start = performance.now(), y0 = pt.y;
+    let rows = 0;
+    while (rows < H && performance.now() - start < 14) {
+      wasm.ptRenderRow(pt.y);
+      pt.y = (pt.y + 1) % H;
+      if (pt.y === 0) pt.passes++;
+      rows++;
+    }
+    if (y0 + rows <= H) ptBlit(y0, rows);
+    else { ptBlit(y0, H - y0); ptBlit(0, rows - (H - y0)); }
+    if (now - pt.statT > 500) {
+      const rays = wasm.ptRays();
+      const rate = (rays - pt.statRays) / ((now - pt.statT) / 1000);
+      pt.statRays = rays; pt.statT = now;
+      $("st-ms").textContent = `${(rate / 1e6).toFixed(1)} M 光線/秒`;
+      $("st-extra").textContent = `${pt.passes} サンプル/画素 · 経過 ${Math.round((now - pt.started) / 1000)} 秒`;
+    }
+  }
+  function syncPtOutputs() {
+    $("pt-depth-out").textContent = `${state.pt.depth} 回`;
+    $("pt-pause").textContent = state.pt.paused ? "再開" : "一時停止";
+    setBusy(!state.pt.paused, state.pt.paused ? "一時停止" : "サンプル追加中");
+  }
+  $("pt-depth").addEventListener("input", (e) => { state.pt.depth = +e.target.value; syncPtOutputs(); if (mode === "pt") ptRestart(); });
+  $("pt-nee").addEventListener("change", (e) => { state.pt.nee = e.target.checked; if (mode === "pt") ptRestart(); });
+  $("pt-pause").addEventListener("click", () => { state.pt.paused = !state.pt.paused; syncPtOutputs(); });
+  $("pt-restart").addEventListener("click", () => { if (mode === "pt") ptRestart(); });
+
+  const MODES = { rt: "raytracer", julia: "julia", fluid: "fluid", pt: "pathtrace" };
+  function setMode(next) {
+    if (mode === "fluid" && next !== "fluid") cancelAnimationFrame(fl.raf);
+    if (mode === "pt" && next !== "pt") cancelAnimationFrame(pt.raf);
+    mode = next;
+    for (const m of Object.keys(MODES)) {
+      $("mode-" + m).setAttribute("aria-pressed", String(mode === m));
+      $("panel-" + m).hidden = mode !== m;
+    }
+    $("hint").textContent = { rt: "ドラッグでカメラを回す", julia: "ドラッグで表示位置を動かす", fluid: "ドラッグで流れを注ぐ", pt: "待つほどノイズが減る" }[mode];
+    $("st-ms").textContent = "–";
+    $("bar").style.width = "0";
+    if ("#" + MODES[mode] !== location.hash) history.replaceState(null, "", "#" + MODES[mode]);
+    if (!wasm) return;
+    if (mode === "fluid") {
+      gen++; clearTimeout(fullTimer); // 静止画の描画を止める
+      if (!fl.nx) fluidInit();
+      syncFluidOutputs();
+      cancelAnimationFrame(fl.raf);
+      fl.fpsT = performance.now(); fl.frames = 0;
+      fl.raf = requestAnimationFrame(fluidFrame);
+      return;
+    }
+    if (mode === "pt") {
+      gen++; clearTimeout(fullTimer); // 静止画の描画を止める
+      cancelAnimationFrame(pt.raf);
+      if (!pt.ready) ptRestart();
+      else { // 途中まで重ねた絵を描き直してから続ける
+        ptBlit(0, H);
+        pt.statT = performance.now(); pt.statRays = wasm.ptRays();
+      }
+      syncPtOutputs();
+      pt.raf = requestAnimationFrame(ptFrame);
+      return;
+    }
+    if (mode === "julia") drawMap();
+    request(0);
+  }
+  $("mode-rt").addEventListener("click", () => setMode("rt"));
+  $("mode-julia").addEventListener("click", () => setMode("julia"));
+  $("mode-fluid").addEventListener("click", () => setMode("fluid"));
+  $("mode-pt").addEventListener("click", () => setMode("pt"));
+  const modeFromHash = () => Object.keys(MODES).find((m) => "#" + MODES[m] === location.hash) || "rt";
+  addEventListener("hashchange", () => { const m = modeFromHash(); if (m !== mode) setMode(m); });
+
+  $("rt-yaw").addEventListener("input", (e) => { state.rt.yaw = +e.target.value; syncRtOutputs(); request(); });
+  $("rt-height").addEventListener("input", (e) => { state.rt.height = +e.target.value; syncRtOutputs(); request(); });
+  $("rt-light").addEventListener("input", (e) => { state.rt.light = +e.target.value; syncRtOutputs(); request(); });
+  document.querySelectorAll("[data-spp]").forEach((b) => b.addEventListener("click", () => {
+    document.querySelectorAll("[data-spp]").forEach((o) => o.setAttribute("aria-pressed", String(o === b)));
+    state.rt.spp = +b.dataset.spp; request(0);
+  }));
+  $("rt-seed").addEventListener("change", (e) => { state.rt.seed = Math.max(0, Math.min(2147483647, Math.floor(+e.target.value || 0))); e.target.value = state.rt.seed; request(0); });
+  $("rt-reroll").addEventListener("click", () => { state.rt.seed = Math.floor(Math.random() * 100000); $("rt-seed").value = state.rt.seed; request(0); });
+
+  $("j-zoom").addEventListener("input", (e) => { state.julia.zoomStep = +e.target.value; syncJuliaOutputs(); request(); });
+  $("j-reset").addEventListener("click", () => { Object.assign(state.julia, { cx: 0, cy: 0, zoomStep: 0 }); $("j-zoom").value = 0; syncJuliaOutputs(); request(0); });
+  document.querySelectorAll("[data-c]").forEach((b) => b.addEventListener("click", () => {
+    const [cr, ci] = b.dataset.c.split(",").map(Number);
+    Object.assign(state.julia, { cr, ci }); drawMap(); request(0);
+  }));
+
+  // マップ上のドラッグで c を選ぶ
+  let mapDrag = false;
+  const pickC = (e) => {
+    const r = map.getBoundingClientRect();
+    const fx = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+    const fy = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+    state.julia.cr = -2.2 + 3.0 * fx; state.julia.ci = 1.0 - 2.0 * fy;
+    drawMap(); request();
+  };
+  map.addEventListener("pointerdown", (e) => { mapDrag = true; map.setPointerCapture(e.pointerId); pickC(e); });
+  map.addEventListener("pointermove", (e) => { if (mapDrag) pickC(e); });
+  map.addEventListener("pointerup", () => { mapDrag = false; });
+  map.addEventListener("pointercancel", () => { mapDrag = false; });
+
+  // ステージ上のドラッグ: レイトレーサーは視点、ジュリア集合は平行移動
+  let drag = null;
+  stage.addEventListener("pointerdown", (e) => {
+    if (!wasm) return;
+    drag = { x: e.clientX, y: e.clientY };
+    stage.setPointerCapture(e.pointerId); stage.classList.add("dragging");
+  });
+  stage.addEventListener("pointermove", (e) => {
+    if (!drag || mode === "pt") return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    drag = { x: e.clientX, y: e.clientY };
+    if (mode === "fluid") {
+      const r = stage.getBoundingClientRect(), g = fl.nx / r.width;
+      const [cr, cg, cb] = hsv((fl.t * 0.004 + 0.45) % 1, 0.75, 1.0);
+      let vx = dx * g, vy = dy * g;
+      const sp = Math.hypot(vx, vy), max = 10 * (fl.nx / 256);
+      if (sp > max) { vx *= max / sp; vy *= max / sp; }
+      fl.pending.push([(e.clientX - r.left) * g + 1, (e.clientY - r.top) * g + 1, vx, vy, cr * 1.2, cg * 1.2, cb * 1.2, fl.nx / 24]);
+      return;
+    }
+    if (mode === "rt") {
+      state.rt.yaw = Math.max(-90, Math.min(90, state.rt.yaw - dx * 0.35));
+      state.rt.height = Math.max(0.3, Math.min(4.5, state.rt.height + dy * 0.012));
+      syncRtOutputs();
+    } else {
+      const k = (W / stage.getBoundingClientRect().width) * (3.0 / zoomOf(state.julia.zoomStep) / H);
+      state.julia.cx -= dx * k; state.julia.cy -= dy * k;
+    }
+    request();
+  });
+  const endDrag = () => { drag = null; stage.classList.remove("dragging"); };
+  stage.addEventListener("pointerup", endDrag);
+  stage.addEventListener("pointercancel", endDrag);
+  stage.addEventListener("keydown", (e) => {
+    if (mode !== "rt") return;
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      state.rt.yaw = Math.max(-90, Math.min(90, state.rt.yaw + (e.key === "ArrowLeft" ? 5 : -5)));
+      syncRtOutputs(); request(); e.preventDefault();
+    }
+  });
+
+  // テーマが変わったらマップを描き直す
+  const onTheme = () => { if (!wasm) return; drawMapBase(); if (mode === "julia") drawMap(); request(0); };
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", onTheme);
+  new MutationObserver(onTheme).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+
+  // ---- 起動
+  syncRtOutputs(); syncJuliaOutputs(); updateExtra();
+  $("f-iters").value = state.fluid.iters; $("f-vort").value = state.fluid.vort; $("f-fade").value = state.fluid.fadeStep;
+  $("pt-depth").value = state.pt.depth; $("pt-depth-out").textContent = `${state.pt.depth} 回`;
+  ctx.fillStyle = "#0e1219"; ctx.fillRect(0, 0, W, H);
+  (async () => {
+    try {
+      const res = await fetch("main.wasm");
+      if (!res.ok) throw new Error(`main.wasm の取得に失敗しました (HTTP ${res.status})`);
+      const bytes = await res.arrayBuffer();
+      const t0 = performance.now();
+      const module = await WebAssembly.compile(bytes);
+      const compileMs = performance.now() - t0;
+      const instance = await WebAssembly.instantiate(module, {});
+      wasm = instance.exports;
+      const imports = WebAssembly.Module.imports(module);
+      const exportsList = WebAssembly.Module.exports(module).map((x) => x.name);
+      const kb = (bytes.byteLength / 1024).toFixed(1);
+      $("lede-size").textContent = `${kb} KB`;
+      $("f-imports").textContent = String(imports.length);
+      $("f-exports").textContent = `${kb} KB · コンパイル ${compileMs.toFixed(1)} ms · imports: ${imports.length ? imports.map((i) => i.module + "." + i.name).join(", ") : "なし"} · exports: ${exportsList.join(", ")}`;
+      drawMapBase();
+      setMode(modeFromHash());
+    } catch (err) {
+      setBusy(false, "読み込み失敗");
+      $("error").hidden = false;
+      $("error-detail").textContent = String(err && err.message ? err.message : err);
+    }
+  })();
+})();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>:root{color-scheme:light}body{margin:0}[hidden]{display:none!important}</style>
+</head>
+<body>
+<title>Scala Wasm Scheme</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+JP:wght@400;500;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+  /* Layout: 左に REPL の巻物 (入力欄が下に固定)、右に例題の棚。860px 未満で縦積み */
+  :root {
+    --bg: #eef1f0;
+    --surface: #ffffff;
+    --fg: #14201d;
+    --muted: #5b6965;
+    --line: #d5dcda;
+    --accent: #0d7468;
+    --accent-soft: #e0efec;
+    --error: #b42318;
+    --error-soft: #fbe9e7;
+    --font-body: "IBM Plex Sans JP", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0e1513; --surface: #151e1c; --fg: #e2ebe8; --muted: #93a39f; --line: #26322f;
+      --accent: #4fd1bd; --accent-soft: #15302b; --error: #ff8a7a; --error-soft: #36191a;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e1513; --surface: #151e1c; --fg: #e2ebe8; --muted: #93a39f; --line: #26322f;
+    --accent: #4fd1bd; --accent-soft: #15302b; --error: #ff8a7a; --error-soft: #36191a;
+    color-scheme: dark;
+  }
+
+  body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.7; }
+  .wrap {
+    max-width: 1180px; margin: 0 auto; display: grid; gap: 22px;
+    padding-block: 28px 48px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  code { font-family: var(--font-mono); font-size: 0.92em; }
+
+  header { display: grid; gap: 6px; }
+  .eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; color: var(--accent); }
+  h1 { margin: 0; font-size: clamp(28px, 4.2vw, 40px); line-height: 1.2; font-weight: 700; text-wrap: balance; }
+  h1 .paren { color: var(--accent); font-family: var(--font-mono); font-weight: 500; }
+  .lede { margin: 0; color: var(--muted); max-width: 64ch; }
+  .lede a { color: var(--accent); }
+
+  .studio { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 20px; align-items: start; }
+  @media (max-width: 860px) { .studio { grid-template-columns: minmax(0, 1fr); } }
+
+  .repl { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; display: grid; min-width: 0; overflow: hidden; }
+  .repl-head { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+  .repl-head .actions { display: flex; gap: 6px; }
+  .btn { font: 500 13px/1 var(--font-body); padding: 8px 11px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); cursor: pointer; white-space: nowrap; }
+  .btn:hover { border-color: var(--muted); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+  button:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .log { font-family: var(--font-mono); font-size: 14px; line-height: 1.6; padding: 14px; height: min(58vh, 560px); overflow-y: auto; display: grid; align-content: start; gap: 12px; }
+  .entry { display: grid; gap: 3px; min-width: 0; }
+  .entry pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+  .in::before { content: "λ> "; color: var(--accent); font-weight: 700; }
+  .in { color: var(--fg); }
+  .in pre { display: inline; }
+  .out { color: var(--muted); }
+  .val { color: var(--accent); font-weight: 500; }
+  .err { color: var(--error); background: var(--error-soft); border-radius: 4px; padding: 4px 8px; }
+  .meta { font-size: 11.5px; color: var(--muted); }
+  .note-line { color: var(--muted); font-style: normal; }
+
+  .input { border-top: 1px solid var(--line); padding: 12px 14px; display: grid; gap: 8px; }
+  #src {
+    width: 100%; box-sizing: border-box; resize: vertical; min-height: 76px;
+    font: 14px/1.6 var(--font-mono); color: var(--fg); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 9px 11px;
+  }
+  .input-row { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; justify-content: space-between; font-size: 12.5px; color: var(--muted); }
+  .depth { font-family: var(--font-mono); }
+  .depth.open { color: var(--accent); }
+
+  .shelf { display: grid; gap: 10px; min-width: 0; }
+  .shelf h2 { margin: 0; font-size: 12px; letter-spacing: 0.08em; color: var(--muted); font-weight: 500; }
+  .ex { text-align: left; display: grid; gap: 4px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--fg); cursor: pointer; font: inherit; min-width: 0; }
+  .ex:hover { border-color: var(--accent); }
+  .ex b { font-size: 14px; font-weight: 600; }
+  .ex span { font-size: 12.5px; color: var(--muted); line-height: 1.55; }
+  .ex.warn b::after { content: " 失敗する例"; font: 600 10.5px var(--font-mono); color: var(--error); margin-left: 6px; letter-spacing: 0.04em; }
+
+  .error-box { border: 1px solid var(--error); background: var(--error-soft); border-radius: 8px; padding: 14px 16px; }
+  .error-box p { margin: 0; }
+
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; border-top: 1px solid var(--line); padding-top: 22px; }
+  .facts h3 { margin: 0 0 6px; font-size: 15px; }
+  .facts p { margin: 0; font-size: 14px; color: var(--muted); }
+  .facts code { color: var(--fg); }
+  .tag { font: 600 12px var(--font-mono); color: var(--accent); margin-bottom: 4px; display: block; }
+  .modline { font-family: var(--font-mono); font-size: 13px; overflow-wrap: anywhere; grid-column: 1 / -1; }
+</style>
+
+<div class="wrap">
+  <header>
+    <span class="eyebrow">SCALA.JS 1.23 · ModuleKind.WasmModule</span>
+    <h1><span class="paren">(</span>Scala Wasm Scheme<span class="paren">)</span></h1>
+    <p class="lede">Scala 2.13 で書いた Scheme 処理系を、そのまま Wasm にしたものです。読み取り、評価、表示はすべて <code id="lede-size">520 KB</code> の <code>main.wasm</code> の中で動き、JavaScript は文字を 1 つずつ渡して受け取るだけです。同じ仕組みで動く <a href="https://claude.ai/artifact/24Cp1y55Mps6r4J7KczzGA" target="_blank" rel="noopener">Scala Wasm Renderer</a> もあります。</p>
+  </header>
+
+  <div id="load-error" class="error-box" hidden>
+    <p>このブラウザでは <code>main.wasm</code> を読み込めませんでした。Scala.js の Wasm 出力は Wasm GC と例外処理を使うため、Chrome 137、Firefox 134、Safari 26 以降で開いてください。</p>
+    <p class="mono" id="load-error-detail"></p>
+  </div>
+
+  <div class="studio">
+    <section class="repl" aria-label="REPL">
+      <div class="repl-head">
+        <span>評価は 1 回あたり <b class="mono" id="fuel-label">2,000 万</b> ステップまで</span>
+        <div class="actions">
+          <button type="button" class="btn" id="clear">表示を消す</button>
+          <button type="button" class="btn" id="reset">環境をリセット</button>
+        </div>
+      </div>
+      <div class="log" id="log" role="log" aria-live="polite"></div>
+      <div class="input">
+        <label for="src" class="mono" style="font-size:12px;color:var(--muted)">式を入力</label>
+        <textarea id="src" spellcheck="false" autocapitalize="off" autocomplete="off" rows="3">(define (fib n)
+  (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+(map fib (iota 15))</textarea>
+        <div class="input-row">
+          <span>Enter で評価 · Shift+Enter で改行 · ↑↓ で履歴 · <span class="depth" id="depth">括弧は閉じています</span></span>
+          <button type="button" class="btn primary" id="run">評価する</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="shelf" aria-label="例題">
+      <h2>例題 (クリックで評価)</h2>
+      <button type="button" class="ex" data-ex="fact"><b>多倍長の階乗</b><span>整数は Scala の BigInt。100 の階乗も 158 桁まで正確に出ます。</span></button>
+      <button type="button" class="ex" data-ex="loop"><b>100 万回の末尾再帰</b><span>末尾呼び出しはループに変換するので、スタックを積みません。</span></button>
+      <button type="button" class="ex" data-ex="counter"><b>クロージャ</b><span>let で閉じ込めた変数を set! で書き換えるカウンター。</span></button>
+      <button type="button" class="ex" data-ex="qsort"><b>クイックソート</b><span>filter と append で書く、教科書どおりの版。</span></button>
+      <button type="button" class="ex" data-ex="sushi"><b>寿司の会計</b><span>連想リストで値段を引き、display で明細を出します。</span></button>
+      <button type="button" class="ex" data-ex="quasi"><b>準クォート</b><span><code>`</code> と <code>,</code> と <code>,@</code> でリストを組み立てます。</span></button>
+      <button type="button" class="ex warn" data-ex="spin"><b>無限ループ</b><span>2,000 万ステップで打ち切るので、タブが固まり続けることはありません。</span></button>
+      <button type="button" class="ex warn" data-ex="deep"><b>深すぎる再帰</b><span>末尾でない再帰は Wasm のスタックを使い、数千段であふれます。</span></button>
+    </aside>
+  </div>
+
+  <section class="facts" aria-label="仕組み">
+    <div>
+      <span class="tag">境界</span>
+      <h3>文字列は 1 文字ずつ</h3>
+      <p>WasmModule の境界を越えられるのは数と数の配列だけです。入力は <code>inPush(c)</code> で UTF-16 の符号単位ごとに送り、結果は <code>resultAt(i)</code> で 1 文字ずつ受け取ります。</p>
+    </div>
+    <div>
+      <span class="tag">末尾呼び出し</span>
+      <h3>評価器はループ</h3>
+      <p>if の枝や手続きの本体など末尾位置の式は、再帰せずに式と環境を差し替えて回します。名前付き let のループも同じ仕組みです。</p>
+    </div>
+    <div>
+      <span class="tag">スタック</span>
+      <h3>eval を細くして 4 倍深く</h3>
+      <p>特殊形式を 1 つの巨大な match に書くと、Wasm 関数のローカル変数が増えて 1 段のフレームが太くなります。別メソッドに分けたら、届く再帰の深さが 1,000〜2,000 段から約 5,700 段に伸びました。</p>
+    </div>
+    <div>
+      <span class="tag">数</span>
+      <h3>BigInt と自前の sin</h3>
+      <p>整数は多倍長、割り切れない割り算は実数になります (有理数はありません)。<code>Math.sin</code> などは WasmModule でリンクできないので、テイラー展開で実装しています。</p>
+    </div>
+    <div class="modline" id="modline">–</div>
+  </section>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const FUEL = 20_000_000;
+  const EXAMPLES = {
+    fact: "(define (fact n)\n  (if (= n 0) 1 (* n (fact (- n 1)))))\n(fact 100)",
+    loop: "(define (sum-to n)\n  (let loop ((i 0) (acc 0))\n    (if (> i n) acc (loop (+ i 1) (+ acc i)))))\n(sum-to 1000000)",
+    counter: "(define (make-counter)\n  (let ((n 0))\n    (lambda () (set! n (+ n 1)) n)))\n(define c (make-counter))\n(c) (c) (c)",
+    qsort: "(define (qsort l)\n  (if (null? l) '()\n      (let ((p (car l)) (r (cdr l)))\n        (append (qsort (filter (lambda (x) (< x p)) r))\n                (list p)\n                (qsort (filter (lambda (x) (>= x p)) r))))))\n(qsort '(3 1 4 1 5 9 2 6 5 3 5))",
+    sushi: "(define menu '((まぐろ . 280) (サーモン . 220) (えび . 180) (ビール . 550)))\n(define (price item) (cdr (assq item menu)))\n(define order '(まぐろ まぐろ サーモン ビール ビール))\n(for-each (lambda (i) (display i) (display \"\\t\") (display (price i)) (newline)) order)\n(apply + (map price order))",
+    quasi: "(define xs '(3 4))\n`(1 ,(+ 1 1) ,@(map (lambda (x) (* x 10)) xs) end)",
+    spin: "(define (spin) (spin))\n(spin)",
+    deep: "(define (depth n)\n  (if (= n 0) 0 (+ 1 (depth (- n 1)))))\n(depth 100000)",
+  };
+
+  let wasm = null;
+  const history = [];
+  let hIndex = -1;
+
+  const log = $("log");
+  function add(cls, text) {
+    const div = document.createElement("div");
+    div.className = "entry";
+    const pre = document.createElement("pre");
+    pre.className = cls;
+    pre.textContent = text;
+    div.appendChild(pre);
+    log.appendChild(div);
+    return div;
+  }
+  function addEntry(src, res) {
+    const box = document.createElement("div");
+    box.className = "entry";
+    const line = (cls, text) => {
+      const pre = document.createElement("pre");
+      pre.className = cls;
+      pre.textContent = text;
+      box.appendChild(pre);
+    };
+    const inp = document.createElement("div");
+    inp.className = "in";
+    const ip = document.createElement("pre");
+    ip.textContent = src;
+    inp.appendChild(ip);
+    box.appendChild(inp);
+    if (res.out) line("out", res.out.replace(/\n$/, ""));
+    if (res.kind === "ok") { if (res.result) line("val", res.result); }
+    else {
+      const lines = res.result.split("\n");
+      if (lines.length > 1) line("val", lines.slice(0, -1).join("\n"));
+      line("err", lines[lines.length - 1]);
+    }
+    const meta = res.kind === "trap" ? "評価を中断" : `${res.steps.toLocaleString("ja-JP")} ステップ · ${res.ms < 10 ? res.ms.toFixed(1) : Math.round(res.ms).toLocaleString("ja-JP")} ms`;
+    line("meta", meta);
+    log.appendChild(box);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function send(src) {
+    wasm.inClear();
+    for (let i = 0; i < src.length; i++) wasm.inPush(src.charCodeAt(i));
+  }
+  function readStr(len, at) {
+    const n = len();
+    let s = "";
+    for (let i = 0; i < n; i += 4096) {
+      const chunk = [];
+      for (let j = i; j < Math.min(n, i + 4096); j++) chunk.push(at(j));
+      s += String.fromCharCode.apply(null, chunk);
+    }
+    return s;
+  }
+  /** kind: ok | error | incomplete | trap */
+  function evaluate(src) {
+    send(src);
+    const t0 = performance.now();
+    let status;
+    try {
+      status = wasm.run(FUEL);
+    } catch (err) {
+      const overflow = err instanceof RangeError || /stack|call stack/i.test(String(err && err.message));
+      return {
+        kind: "trap", ms: performance.now() - t0, steps: 0, out: "",
+        result: overflow
+          ? "スタックがあふれました。末尾位置でない再帰が深すぎます。名前付き let などで末尾再帰に書き換えると、深さの制限がなくなります。"
+          : `Wasm の実行が中断されました: ${err && err.message ? err.message : err}`,
+      };
+    }
+    const ms = performance.now() - t0;
+    return {
+      kind: ["ok", "error", "incomplete"][status], ms, steps: wasm.steps(),
+      out: readStr(wasm.outputLen, wasm.outputAt), result: readStr(wasm.resultLen, wasm.resultAt),
+    };
+  }
+
+  function submit(src, { fromInput = true } = {}) {
+    if (!wasm || !src.trim()) return false;
+    const res = evaluate(src);
+    if (res.kind === "incomplete") return false;
+    addEntry(src.replace(/\s+$/, ""), res);
+    if (history[history.length - 1] !== src) history.push(src);
+    hIndex = history.length;
+    if (fromInput) { $("src").value = ""; updateDepth(); }
+    return true;
+  }
+
+  // 括弧の深さ (文字列とコメントを除いて数える。表示のためだけ)
+  function parenDepth(s) {
+    let d = 0, inStr = false, esc = false, inComment = false;
+    for (const c of s) {
+      if (inComment) { if (c === "\n") inComment = false; continue; }
+      if (inStr) { if (esc) esc = false; else if (c === "\\") esc = true; else if (c === '"') inStr = false; continue; }
+      if (c === '"') inStr = true;
+      else if (c === ";") inComment = true;
+      else if (c === "(" || c === "[") d++;
+      else if (c === ")" || c === "]") d--;
+    }
+    return d;
+  }
+  function updateDepth() {
+    const d = parenDepth($("src").value);
+    const el = $("depth");
+    el.classList.toggle("open", d > 0);
+    el.textContent = d > 0 ? `開いたままの括弧 ${d} 個` : d < 0 ? `閉じ括弧が ${-d} 個多い` : "括弧は閉じています";
+  }
+
+  const src = $("src");
+  src.addEventListener("input", updateDepth);
+  src.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      if (parenDepth(src.value) > 0) return; // 括弧が開いていれば普通に改行
+      e.preventDefault();
+      submit(src.value);
+    } else if (e.key === "ArrowUp" && src.selectionStart === 0 && src.selectionEnd === 0 && history.length) {
+      e.preventDefault();
+      hIndex = Math.max(0, hIndex - 1);
+      src.value = history[hIndex]; updateDepth();
+    } else if (e.key === "ArrowDown" && src.selectionStart === src.value.length && hIndex < history.length) {
+      e.preventDefault();
+      hIndex = Math.min(history.length, hIndex + 1);
+      src.value = hIndex === history.length ? "" : history[hIndex]; updateDepth();
+    }
+  });
+  $("run").addEventListener("click", () => { if (!submit(src.value)) src.focus(); });
+  $("clear").addEventListener("click", () => { log.textContent = ""; });
+  $("reset").addEventListener("click", () => {
+    if (!wasm) return;
+    wasm.reset(42);
+    add("note-line meta", ";; 環境をリセットしました。define した名前はすべて消えています。");
+    log.scrollTop = log.scrollHeight;
+  });
+  document.querySelectorAll("[data-ex]").forEach((b) => b.addEventListener("click", () => {
+    const code = EXAMPLES[b.dataset.ex];
+    submit(code, { fromInput: false });
+    src.focus();
+  }));
+
+  updateDepth();
+  (async () => {
+    try {
+      const res = await fetch("main.wasm");
+      if (!res.ok) throw new Error(`main.wasm の取得に失敗しました (HTTP ${res.status})`);
+      const bytes = await res.arrayBuffer();
+      const t0 = performance.now();
+      const module = await WebAssembly.compile(bytes);
+      const compileMs = performance.now() - t0;
+      wasm = (await WebAssembly.instantiate(module, {})).exports;
+      const kb = Math.round(bytes.byteLength / 1024);
+      const imports = WebAssembly.Module.imports(module);
+      $("lede-size").textContent = `${kb} KB`;
+      $("modline").textContent = `main.wasm ${kb} KB · コンパイル ${compileMs.toFixed(1)} ms · imports: ${imports.length ? imports.map((i) => i.module + "." + i.name).join(", ") : "なし"} · exports: ${WebAssembly.Module.exports(module).map((x) => x.name).join(", ")}`;
+      add("note-line meta", ";; Scala Wasm Scheme へようこそ。右の例題をクリックするか、下に式を書いて Enter で評価します。");
+      submit(EXAMPLES.fact.replace("(fact 100)", "(fact 30)"), { fromInput: false });
+      submit("(display \"寿司とビール\")\n(string-append \"Scala\" \" + \" \"Wasm\")", { fromInput: false });
+    } catch (err) {
+      $("load-error").hidden = false;
+      $("load-error-detail").textContent = String(err && err.message ? err.message : err);
+    }
+  })();
+})();
+</script>
+
+</body>
+</html>
