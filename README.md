@@ -18,6 +18,8 @@ Scala.js 1.23.0 で入った `ModuleKind.WasmModule` を、いろいろ試した
 | `hosts/python/` | wasmtime (Python バインディング) から動かすスクリプト |
 | `pages/renderer/` | レイトレーサー、ジュリア集合、流体、パストレーシングをブラウザで動かすページ |
 | `pages/scheme/` | Scheme の REPL ページ |
+| `audio/` | インパルス応答の畳み込みエフェクター (FFT 畳み込み、残響や電話のインパルス応答の合成) |
+| `pages/convolver/` | エフェクターのページ |
 | `experiments/scala3-mixed/` | ロジックを Scala 3 で、Wasm との境界だけを Scala 2.13 で書く構成 |
 
 ## 必要なもの
@@ -157,3 +159,4 @@ Scheme の評価器で、特殊形式を全部 1 つの巨大な `match` に書�
 流体シミュレーションの時間変化 (60 / 150 / 300 ステップ):
 
 ![流体](docs/images/fluid-sheet.png)
+

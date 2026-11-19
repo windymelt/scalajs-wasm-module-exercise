@@ -32,3 +32,13 @@ lazy val scheme = project.in(file("scheme"))
     Compile / unmanagedSourceDirectories += (ThisBuild / baseDirectory).value / "src" / "main" / "scala" / "img",
     scalaJSLinkerConfig := wasmModule.value,
   )
+
+/** インパルス応答で音を変換するエフェクター: 数学関数は img/MathX を流用する */
+lazy val audio = project.in(file("audio"))
+  .enablePlugins(ScalaJSPlugin)
+  .settings(
+    name := "sjs-wasm-audio",
+    Compile / unmanagedSourceDirectories += (ThisBuild / baseDirectory).value / "src" / "main" / "scala" / "img",
+    scalaJSLinkerConfig := wasmModule.value,
+  )
+
