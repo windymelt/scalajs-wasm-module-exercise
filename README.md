@@ -160,3 +160,46 @@ Scheme の評価器で、特殊形式を全部 1 つの巨大な `match` に書�
 
 ![流体](docs/images/fluid-sheet.png)
 
+## Wasm プラグインで差し替えられる HTTP ミドルウェア (`middleware/`)
+
+Scala.js の `WasmModule` で作ったプラグインを、JVM 上の HTTP サーバーに GraalWasm (GraalVM Polyglot 25.5) で差し込む実験。
+
+| 場所 | 内容 |
+|---|---|
+| `middleware/sdk/` | プラグイン用 SDK (Scala.js)。`Middleware` の `onRequest` / `onResponse` を書き、`main` で `Abi.install` する |
+| `middleware/plugins/` | プラグインの例: `waf`、`ratelimit`、`auth`、`security-headers`、`signature`、わざと暴れる `evil`、許可されない機能を要求する `greedy` |
+| `middleware/host/` | JDK の `HttpServer` にプラグインを玉ねぎ型に重ねるホスト (Scala 3、JVM) |
+
+```sh
+./middleware/build-plugins.sh                       # プラグインをビルドして middleware/host/plugins/ に置く
+sbt "mwHost/run inspect plugins/ratelimit.wasm"      # 要求する権限を見る
+sbt "mwHost/run serve --config server.conf"          # http://127.0.0.1:8080/
+```
+
+### 仕組み
+
+- 境界は数値だけなので、バイト列は 8 バイトずつ `Long` に詰め、1 回の呼び出しで最大 64 バイト送る (`mw_put64`)。
+- ホストの機能 (時刻、全インスタンスで共有するカウンター) は、設定で許可したものだけをインポートとして渡す。プラグインのインポートは読み込む前に `.wasm` から読み、許可されていないものがあれば起動を中止する。Scala.js の不要コード削除のおかげで、実際に使う機能だけがインポートに現れる。
+- 例外は SDK で捕まえてメッセージを返す (ホストに直接届く例外のメッセージは空だった)。
+- 1 回の呼び出しには時間制限 (既定 200 ms) をかけ、超えたら `Context.interrupt` で止める。失敗したリクエストはアプリへ通さない (502 / 503)。
+
+### わかったこと
+
+- GraalWasm 25.5 は Wasm GC・例外処理・型付き関数参照・末尾呼び出しが既定で有効で、Scala.js の出力をそのまま動かせた。
+- `SandboxPolicy.UNTRUSTED` (別ヒープで動かす) は、Community 版でも `org.graalvm.polyglot:wasm-isolate-community` を足せば使えた。メモリ (`sandbox.MaxHeapMemory`)、CPU 時間、スタックの深さに上限をかけられる。
+- `sandbox.MaxCPUTime` はインスタンスが生きている間の合計なので、リクエストごとの制限は別に必要だった。
+- `evil` の 4 種類の暴走はすべて止まり、サーバーは応答し続けた: 例外 (502、32 ms)、無限ループ (503、200 ms で停止)、メモリ食い (503、64 MB の上限)、無限再帰 (502、スタック切れ)。
+- 玉ねぎ型なので、途中のプラグインが応答を返すと、それより後ろは通らない。すべての応答に付けたいヘッダーは先頭のプラグインで付ける。
+
+### 速さ (4 コア、同時 8 本、クライアントも同じマシン)
+
+| 構成 | 速さ | メモリ (RSS) |
+|---|---|---|
+| プラグインなし | 3,664 req/s | 223 MB |
+| プラグイン 6 個、CONSTRAINED (JVM 内) | 430 req/s | 814 MB |
+| プラグイン 6 個、UNTRUSTED (別ヒープ) | 468 req/s | 1,467 MB |
+
+- 普通の OpenJDK では、JVM 内の GraalWasm は JIT が効かずインタプリタで動く。ジュリア集合 640×400 が 10.6 秒 (CONSTRAINED) に対し、別ヒープでは JIT が効いて 170 ms (Node.js は 184 ms) だった。
+- 境界をまたぐ呼び出し 1 回は 0.54 µs (CONSTRAINED) / 1.50 µs (UNTRUSTED)。`onRequest` 1 回は 760 µs / 197 µs で、大半は SDK がリクエストを文字列やコレクションに組み立てる処理だった。
+- 最初は JDK の `HttpServer` の Nagle と遅延 ACK のせいで、プラグインなしでも 180 req/s しか出なかった (`sun.net.httpserver.nodelay=true` で解消)。
+- 隔離ヒープはインスタンスごとに作ると 1 個約 160 MB 使った (48 個で 7.7 GB)。プラグインごとに `Engine` を 1 つ作ってインスタンスで共有したら 1.5 GB に減った。

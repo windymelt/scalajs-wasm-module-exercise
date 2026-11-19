@@ -11,3 +11,6 @@ out/
 pages/*/main.wasm
 __pycache__/
 .venv/
+
+# ミドルウェアのプラグイン (scripts でビルドしてコピーする)
+middleware/host/plugins/
