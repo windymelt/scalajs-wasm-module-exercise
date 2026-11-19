@@ -258,10 +258,19 @@
         <p class="note">切ると、跳ね返った光線が偶然光源に当たったときしか光が届かず、同じサンプル数でもノイズがずっと多くなります。サンプルを重ねれば、どちらも同じ明るさに近づきます。</p>
       </div>
       <div class="field">
-        <div class="row"><span style="font-size:14px;font-weight:500">右の球のガラス</span></div>
+        <div class="row"><span style="font-size:14px;font-weight:500">右に置くもの</span></div>
+        <div class="seg" role="group" aria-label="右に置くもの">
+          <button type="button" data-obj="0" aria-pressed="false">ガラス玉</button>
+          <button type="button" data-obj="1" aria-pressed="false">空のグラス</button>
+          <button type="button" data-obj="2" aria-pressed="true">ビール</button>
+        </div>
+        <p class="note">グラスは厚い底のタンブラーです。ビールは屈折率 1.33 の琥珀色の液体で、上に白い泡が乗っています。</p>
+      </div>
+      <div class="field">
+        <div class="row"><span style="font-size:14px;font-weight:500">ガラスの色</span></div>
         <div class="seg seg4" role="group" aria-label="ガラスの色">
-          <button type="button" data-tint="0" aria-pressed="false">透明</button>
-          <button type="button" data-tint="1" aria-pressed="true">ビール</button>
+          <button type="button" data-tint="0" aria-pressed="true">透明</button>
+          <button type="button" data-tint="1" aria-pressed="false">琥珀</button>
           <button type="button" data-tint="2" aria-pressed="false">エメラルド</button>
           <button type="button" data-tint="3" aria-pressed="false">サファイア</button>
         </div>
@@ -303,7 +312,7 @@
     <div>
       <span class="step">パストレーシング</span>
       <h3>三角関数なしで半球を選ぶ</h3>
-      <p>拡散面では、単位円板から選んだ点を半球へ持ち上げて、コサイン重み付きの方向を作ります (Malley の方法)。sin も cos も使わずに済みます。</p>
+      <p>拡散面では、単位円板から選んだ点を半球へ持ち上げて、コサイン重み付きの方向を作ります (Malley の方法)。sin も cos も使わずに済みます。グラスは円柱と円板の面の集まりで、面ごとに表と裏の媒質 (空気・ガラス・ビール) を決めてあるので、ガラスからビールへの屈折もそのまま計算できます。</p>
     </div>
     <div>
       <span class="step">補足</span>
@@ -541,9 +550,9 @@
 
   // ---- パストレーシング: 累積バッファは Scala 側。1 フレーム 14 ms まで行を描き、描いた行だけ転送する
   const pt = { raf: 0, y: 0, passes: 0, statT: 0, statRays: 0, started: 0, ready: false };
-  state.pt = { depth: 8, nee: true, paused: false, tint: 1, density: 1 };
+  state.pt = { depth: 8, nee: true, paused: false, tint: 0, density: 1, obj: 2 };
   function ptRestart() {
-    wasm.ptSetup(W, H, 1, state.pt.depth, state.pt.nee ? 1 : 0, state.pt.tint, state.pt.density);
+    wasm.ptSetup(W, H, 1, state.pt.depth, state.pt.nee ? 1 : 0, state.pt.tint, state.pt.density, state.pt.obj);
     pt.y = 0; pt.passes = 0; pt.statT = performance.now(); pt.statRays = 0; pt.started = performance.now(); pt.ready = true;
     ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
     $("st-ms").textContent = "–"; $("st-extra").textContent = "0 サンプル/画素";
@@ -590,6 +599,11 @@
   $("pt-nee").addEventListener("change", (e) => { state.pt.nee = e.target.checked; if (mode === "pt") ptRestart(); });
   $("pt-pause").addEventListener("click", () => { state.pt.paused = !state.pt.paused; syncPtOutputs(); });
   $("pt-restart").addEventListener("click", () => { if (mode === "pt") ptRestart(); });
+  document.querySelectorAll("[data-obj]").forEach((b) => b.addEventListener("click", () => {
+    document.querySelectorAll("[data-obj]").forEach((o) => o.setAttribute("aria-pressed", String(o === b)));
+    state.pt.obj = +b.dataset.obj;
+    if (mode === "pt") ptRestart();
+  }));
   document.querySelectorAll("[data-tint]").forEach((b) => b.addEventListener("click", () => {
     document.querySelectorAll("[data-tint]").forEach((o) => o.setAttribute("aria-pressed", String(o === b)));
     state.pt.tint = +b.dataset.tint;

@@ -75,9 +75,12 @@ object WebExports {
   private var pt: PathTracer = new PathTracer(1, 1, 0, 1, true)
 
   @WasmExport("ptSetup")
-  /** tint: 0 透明, 1 ビール, 2 エメラルド, 3 サファイア。density: 色の濃さの倍率 */
-  def ptSetup(w: Int, h: Int, seed: Int, maxDepth: Int, nee: Int, tint: Int, density: Double): Unit =
-    pt = new PathTracer(w, h, seed, maxDepth, nee != 0, tint, density)
+  /**
+   * tint: ガラスの色 (0 透明, 1 琥珀, 2 エメラルド, 3 サファイア)。density: 色の濃さの倍率。
+   * obj: 右に置く物体 (0 ガラス玉, 1 空のグラス, 2 ビールを注いだグラス)
+   */
+  def ptSetup(w: Int, h: Int, seed: Int, maxDepth: Int, nee: Int, tint: Int, density: Double, obj: Int): Unit =
+    pt = new PathTracer(w, h, seed, maxDepth, nee != 0, tint, density, obj)
 
   @WasmExport("ptRenderRow")
   def ptRenderRow(y: Int): Unit = pt.renderRow(y)
