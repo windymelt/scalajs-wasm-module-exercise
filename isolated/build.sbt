@@ -2,13 +2,17 @@ import org.scalajs.linker.interface.ModuleKind
 
 // wasmIsolated { ... } の試作
 //
-//   demo (Scala 3, JVM) ─ コンパイル時にマクロがブロックのソースを書き出す
+//   demo (Scala 3, JVM)      ─ コンパイル時にマクロがブロックのソースを書き出す
 //     ↓
-//   wasm (Scala.js 2.13) ─ 書き出されたソースを main.wasm にリンクする
+//   blocks (Scala.js、Scala 3) ─ ブロックを Scala 3 のままコンパイルする
+//     ↓
+//   wasm (Scala.js、Scala 2.13) ─ @WasmExport の窓口をコンパイルし、main.wasm にリンクする
 //     ↓
 //   demo の resources に main.wasm を入れ、実行時に GraalWasm で動かす
 
 val scala3 = "3.10.1"
+/** Scala.js 側の Scala 3。3.8 以降は標準ライブラリが scala-library 3.x になり、2.13 から読めないので 3.7 系にする */
+val scala3ForWasm = "3.7.4"
 val graalVersion = "25.6.5.1"
 
 /** マクロがブロックのソースを書き出す場所。マクロは呼び出し側の <プロジェクト>/target/wasm-blocks に書くので、それに合わせる */
@@ -46,15 +50,28 @@ lazy val demo = project
     outputStrategy := Some(StdoutOutput),
   )
 
-/** ブロックを Wasm にする Scala.js のプロジェクト。ソースはすべてマクロが書き出したもの */
-lazy val wasm = project
+/** ブロックを Scala 3 のままコンパイルする Scala.js のプロジェクト。ソースはすべてマクロが書き出したもの */
+lazy val blocks = project
   .enablePlugins(ScalaJSPlugin)
   .settings(
-    scalaVersion := "2.13.18", // Scala 3 では WasmModule の出力が空になる
-    scalacOptions ++= Seq("-Xsource:3", "-Wconf:any:s"),
-    scalaJSLinkerConfig ~= (_.withESFeatures(_.withUseWebAssembly(true)).withModuleKind(ModuleKind.WasmModule)),
+    scalaVersion := scala3ForWasm,
+    scalacOptions += "-Wconf:any:s",
     Compile / sourceGenerators += Def.task {
       (LocalProject("demo") / Compile / compile).value // demo をコンパイルすると、マクロがソースを書き出す
-      (blocksDir.value ** "*.scala").get
+      (blocksDir.value / "blocks" ** "*.scala").get
+    }.taskValue,
+  )
+
+/** ブロックを @WasmExport で外に出し、main.wasm にリンクする。Scala 3 は @WasmExport を処理しないので Scala 2.13 で書く */
+lazy val wasm = project
+  .enablePlugins(ScalaJSPlugin)
+  .dependsOn(blocks)
+  .settings(
+    scalaVersion := "2.13.18",
+    scalacOptions += "-Ytasty-reader", // Scala 3 でコンパイルした blocks を読む
+    scalaJSLinkerConfig ~= (_.withESFeatures(_.withUseWebAssembly(true)).withModuleKind(ModuleKind.WasmModule)),
+    Compile / sourceGenerators += Def.task {
+      (LocalProject("demo") / Compile / compile).value
+      (blocksDir.value / "exports" ** "*.scala").get
     }.taskValue,
   )
