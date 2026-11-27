@@ -61,7 +61,8 @@ object Ops:
 object Convert:
   def grayBlur(input: Array[Byte], radius: Int): Array[Byte] =
     val img =
-      if input.length >= 4 && input(0) == 'q' && input(1) == 'o' && input(2) == 'i' && input(3) == 'f' then Qoi.decode(input)
+      if Png.isPng(input) then Png.decode(input)
+      else if input.length >= 4 && input(0) == 'q' && input(1) == 'o' && input(2) == 'i' && input(3) == 'f' then Qoi.decode(input)
       else if input.length >= 2 && input(0) == 'P' then Pnm.decode(input)
       else throw DecodeError("知らない形式です")
     Qoi.encode(Ops.grayscale(Ops.boxBlur(img, radius)))
