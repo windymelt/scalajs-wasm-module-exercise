@@ -30,6 +30,11 @@ def deep(): Long =
     def down(k: Long): Long = if k == 0 then 0 else 1 + down(k - 1)
     down(100_000_000L)
 
+/** 5. 配列を持ち込み、配列を返す */
+def evens(xs: Array[Int]): Array[Int] =
+  wasmIsolated:
+    xs.filter(_ % 2 == 0).map(_ * 10)
+
 def attempt[A](label: String)(body: => A): Unit =
   try println(s"$label: ${body}")
   catch case e: IsolationFailure => println(s"$label: ${e.getMessage}")
@@ -39,5 +44,6 @@ def attempt[A](label: String)(body: => A): Unit =
   attempt("終わらない計算")(spin())
   attempt("メモリを使い果たす計算")(hog())
   attempt("深すぎる再帰")(deep())
-  // 5. 止めたあとも、JVM もほかのブロックも普通に動き続ける
+  attempt("配列の受け渡し")(evens(Array(1, 2, 3, 4, 5, 6)).mkString("[", ", ", "]"))
+  // 6. 止めたあとも、JVM もほかのブロックも普通に動き続ける
   attempt("そのあとの fib(20)")(fibonacci(20))

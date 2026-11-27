@@ -8,7 +8,8 @@ import scala.quoted.*
 /**
  * ブロックを WebAssembly にコンパイルし、JVM のヒープとは別の箱 (GraalWasm) の中で実行する。
  *
- * - ブロックの外から持ち込めるのは数値 (Int / Long / Float / Double) の値だけ
+ * - ブロックの外から持ち込めるのは数値 (Int / Long / Float / Double) の値と、数値の配列 (Array[Byte] から Array[Double] まで)
+ * - 配列は Wasm の中へ写しが渡る。外の配列の要素を書き換えることはできない
  * - ブロックの中は Scala 3 で書ける (Scala.js の Scala 3.7 でコンパイルする)
  * - 時間とメモリの上限は、文脈にある Limits で決める
  */
@@ -24,13 +25,18 @@ private object WasmIsolatedMacro:
       case Inlined(_, _, t) => t
       case t => t
 
-    val boundary = List("Int" -> TypeRepr.of[Int], "Long" -> TypeRepr.of[Long], "Float" -> TypeRepr.of[Float], "Double" -> TypeRepr.of[Double])
-    def typeName(t: TypeRepr): Option[String] = boundary.collectFirst { case (n, r) if t.widen.dealias =:= r => n }
+    // Wasm の境界を越えられる型。スカラーは i32 / i64 / f32 / f64 に、配列は Wasm GC の配列になる
+    val scalars = List("Int" -> TypeRepr.of[Int], "Long" -> TypeRepr.of[Long], "Float" -> TypeRepr.of[Float], "Double" -> TypeRepr.of[Double])
+    val arrays = List(
+      "Array[Byte]" -> TypeRepr.of[Array[Byte]], "Array[Short]" -> TypeRepr.of[Array[Short]],
+      "Array[Int]" -> TypeRepr.of[Array[Int]], "Array[Long]" -> TypeRepr.of[Array[Long]],
+      "Array[Float]" -> TypeRepr.of[Array[Float]], "Array[Double]" -> TypeRepr.of[Array[Double]])
+    def typeName(t: TypeRepr): Option[String] = (scalars ++ arrays).collectFirst { case (n, r) if t.widen.dealias =:= r => n }
 
     val returnType =
       if TypeRepr.of[T] =:= TypeRepr.of[Unit] then "Unit"
       else typeName(TypeRepr.of[T]).getOrElse(
-        report.errorAndAbort(s"ブロックの値の型は Int / Long / Float / Double / Unit のどれかにしてください (今は ${TypeRepr.of[T].show})", term.pos))
+        report.errorAndAbort(s"ブロックの値の型は数値 (Int / Long / Float / Double)、数値の配列、Unit のどれかにしてください (今は ${TypeRepr.of[T].show})", term.pos))
 
     // ---- ブロックの中で定義されたもの
     val defined = collection.mutable.Set.empty[Symbol]
@@ -63,13 +69,16 @@ private object WasmIsolatedMacro:
             fail("ブロックの中では this (外のオブジェクト) を使えません", t.pos)
           case Assign(lhs, _) if lhs.symbol.exists && !isInside(lhs.symbol) =>
             fail(s"ブロックの外の変数 ${lhs.symbol.name} に代入することはできません", lhs.pos)
+          // xs(i) = v は xs.update(i, v) になる。Wasm には写しが渡るので、書き換えても外の配列は変わらない
+          case Apply(sel @ Select(qual: Ident, "update"), _) if !isInside(qual.symbol) && arrays.exists((_, r) => qual.tpe.widen.dealias =:= r) =>
+            fail(s"ブロックの外の配列 ${qual.symbol.name} の要素は書き換えられません (Wasm には写しが渡ります)。ブロックの中で写してから書き換えてください", sel.pos)
           case id: Ident if id.symbol.isTerm && !isInside(id.symbol) && !isStdlib(id.symbol) =>
             val s = id.symbol
             if s.isValDef && !s.flags.is(Flags.Module) then
               typeName(id.tpe) match
                 case Some(t) => captured.getOrElseUpdate(s, t)
                 case None =>
-                  fail(s"ブロックの外から持ち込めるのは数値だけです: ${s.name} の型は ${id.tpe.widen.show}", id.pos)
+                  fail(s"ブロックの外から持ち込めるのは数値と数値の配列だけです: ${s.name} の型は ${id.tpe.widen.show}", id.pos)
             else
               fail(s"ブロックの外の ${s.name} は Wasm の中では使えません。ブロックの中で定義してください", id.pos)
           case _ =>
@@ -126,6 +135,12 @@ private object WasmIsolatedMacro:
     // ---- 呼び出しに置き換える
     val args = Varargs(captured.keys.toList.map(s => Ref(s).asExpr))
     val read: Expr[org.graalvm.polyglot.Value => T] = (returnType match
+      case "Array[Byte]" => '{ WasmRuntime.readArray[Byte] }
+      case "Array[Short]" => '{ WasmRuntime.readArray[Short] }
+      case "Array[Int]" => '{ WasmRuntime.readArray[Int] }
+      case "Array[Long]" => '{ WasmRuntime.readArray[Long] }
+      case "Array[Float]" => '{ WasmRuntime.readArray[Float] }
+      case "Array[Double]" => '{ WasmRuntime.readArray[Double] }
       case "Int" => '{ (v: org.graalvm.polyglot.Value) => v.asInt() }
       case "Long" => '{ (v: org.graalvm.polyglot.Value) => v.asLong() }
       case "Float" => '{ (v: org.graalvm.polyglot.Value) => v.asFloat() }

@@ -63,16 +63,44 @@ object WasmRuntime:
       i
     }
 
+  /**
+   * JVM の配列を Wasm の配列にする。GraalWasm には JVM の int[] をそのまま渡せないので、
+   * main.wasm の wasmIsolated_alloc_* で Wasm 側に配列を作り、要素を 1 つずつ書き込む (1 要素あたり 1 µs ほど)
+   */
+  private def toWasm(exports: Value, arg: Any): AnyRef =
+    def fill(elem: String, n: Int)(at: Int => AnyRef): Value =
+      val w = exports.getMember(s"wasmIsolated_alloc_$elem").execute(Int.box(n))
+      var i = 0
+      while i < n do { w.setArrayElement(i, at(i)); i += 1 }
+      w
+    arg match
+      case xs: Array[Byte] => fill("Byte", xs.length)(i => Byte.box(xs(i)))
+      case xs: Array[Short] => fill("Short", xs.length)(i => Short.box(xs(i)))
+      case xs: Array[Int] => fill("Int", xs.length)(i => Int.box(xs(i)))
+      case xs: Array[Long] => fill("Long", xs.length)(i => Long.box(xs(i)))
+      case xs: Array[Float] => fill("Float", xs.length)(i => Float.box(xs(i)))
+      case xs: Array[Double] => fill("Double", xs.length)(i => Double.box(xs(i)))
+      case x => x.asInstanceOf[AnyRef]
+
+  /** ブロックが返した Wasm の配列を JVM の配列に写す (これも 1 要素ずつになる) */
+  def readArray[A](using ct: scala.reflect.ClassTag[A]): Value => Array[A] =
+    v => v.as(ct.wrap.runtimeClass.asInstanceOf[Class[Array[A]]])
+
   /** export された関数 name を呼び、戻り値を read で JVM の値にする (コンテキストを閉じる前に読む必要がある) */
   def call[T](name: String, limits: Limits, args: Any*)(read: Value => T): T = synchronized {
     val inst = instanceFor(limits)
     val f = inst.exports.getMember(name)
     require(f != null, s"main.wasm に $name がありません (sbt でリンクし直してください)")
-    val timer = watchdog.schedule(
-      (() => inst.context.interrupt(Duration.ofSeconds(5))): Runnable,
-      limits.timeout.toMillis, TimeUnit.MILLISECONDS)
+    var timer: java.util.concurrent.ScheduledFuture[?] = null
     try
-      read(f.execute(args.map(_.asInstanceOf[AnyRef])*))
+      // 配列の写しは上限の時間に含めない (時間で止めるのは、ブロックの計算だけ)
+      val wasmArgs = args.map(toWasm(inst.exports, _))
+      timer = watchdog.schedule(
+        (() => inst.context.interrupt(Duration.ofSeconds(5))): Runnable,
+        limits.timeout.toMillis, TimeUnit.MILLISECONDS)
+      val result = f.execute(wasmArgs*)
+      timer.cancel(false)
+      read(result)
     catch
       case e: PolyglotException =>
         cached.foreach(_.context.close(true)) // 途中で止めたインスタンスは中の状態が壊れているかもしれないので捨てる
@@ -80,5 +108,5 @@ object WasmRuntime:
         if e.isResourceExhausted then throw new OutOfMemory(limits.maxHeap)
         else if e.isInterrupted || e.isCancelled then throw new TimedOut(limits.timeout)
         else throw new Crashed(Option(e.getMessage).getOrElse("(理由不明)"))
-    finally timer.cancel(false)
+    finally if timer != null then timer.cancel(false)
   }
