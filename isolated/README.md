@@ -22,6 +22,9 @@ sbt "demo/runMain bench.measure" # 計測
 sbt "demo/runMain bench.errors"  # マクロが出すコンパイルエラーの一覧
 sbt "demo/runMain bench.arrays"  # 配列の受け渡しの確認と計測
 sbt "demo/runMain bench.cbor"    # case class や String などを CBOR (borer) で受け渡す確認と計測
+sbt "demo/runMain bench.images"  # 画像処理を隔離する確認と計測
+sbt "demo/runMain bench.imagesJvm" # 比べるために、細工した画像を JVM でそのまま処理する (1 分ほどかかる)
+sbt "demo/runMain bench.convertFile in.qoi out.qoi 2"  # ファイルを変換する
 ```
 
 JDK 21 で確かめた。GraalVM の JDK は要らない (GraalWasm は Maven の依存として入る)。
@@ -150,6 +153,60 @@ CBOR (borer 1.19.0) での受け渡し (2026-11-27、ISOLATED、`sbt "demo/runMa
 - ブロックを Scala 3 でコンパイルする形に変えたあと (同じ日の 20:52 UTC) は、fib(35) が JVM 31〜38 ms、wasmIsolated (ISOLATED) 73〜96 ms、初回の呼び出し 351 ms だった。VM 全体が速くなっていたので、上の表とは直接比べられない。
 - UNTRUSTED が遅いのは、必須になる `sandbox.MaxStackFrames` などの上限のためだと考えているが、原因は切り分けていない (未確認)。
 - 比較: JDK 21 の `Thread.stop` は `UnsupportedOperationException` を投げ、`Thread.interrupt` では計算だけのループは止まらなかった (`Stop.java` で確認)。
+
+## 画像処理を隔離する (2026-11-27)
+
+`shared/src/main/scala/imaging/` に、外部のライブラリを使わずに書いた小さな画像処理を置いた。JVM と Wasm の両方でコンパイルされるので、同じコードを JVM でもブロックの中でも呼べる。
+
+- `Qoi`: [QOI](https://qoiformat.org/) の読み書き。直前の画素の繰り返しや差で画素を短く書く、可逆圧縮の形式
+- `Pnm`: PGM (P5) と PPM (P6) の読み込みと、PPM の書き出し
+- `Ops`: 箱型のぼかしとグレースケール
+- `Convert.grayBlur`: 先頭のバイトで形式を見分けて読み、ぼかしてグレースケールにし、QOI で返す
+
+```scala
+def grayBlurIsolated(input: Array[Byte], radius: Int)(using Limits): Array[Byte] =
+  wasmIsolated { imaging.Convert.grayBlur(input, radius) }
+```
+
+`Pnm` には、ヘッダーを読むところに**わざとバグを残してある**。数字でない文字やファイルの終わりで先へ進まないので、ヘッダーが途中で切れたファイルを渡すと無限ループになる。デコーダーにありがちな種類のバグを、試すために入れたもの。
+
+### 正しさ
+
+- 自前の QOI で書いて読むと、元の画素に戻る。
+- PyPI の `qoi` 0.8.0 で書いた 80×48 の QOI (アルファの違う行と乱れた画素を含む) を `bench.convertFile` で変換し、結果を `qoi` で読んで、numpy で計算したグレースケールと半径 2 のぼかしの値と比べた。半径 0 と 2 で全画素が一致した。
+- 下の計測のすべての大きさで、wasmIsolated の結果と JVM の結果がバイト単位で一致した。
+
+### 細工した画像 (`Limits(timeout = 2.seconds, maxHeap = "64MB")`)
+
+| 入力 | wasmIsolated | JVM でそのまま (`bench.imagesJvm`、ヒープの上限 3,586 MB) |
+|---|---|---|
+| 幅と高さが 16000×16000 で、中身は「繰り返し」の命令 64 個の QOI (86 バイト) | 29〜30 ms でメモリ上限により止まった | 止まらず、49.5 秒かけて 4,129,055 バイトの画像を返した (画素の領域だけで 1 GB を確保する) |
+| 2000×2000 の同じ作りの QOI (86 バイト) | 止まらず、850〜890 ms で 64,539 バイトを返した (上限の 64MB に収まった) | (測っていない) |
+| ヘッダーが途中で切れた PPM | 2,009〜2,010 ms で時間切れにより止まった | 別スレッドで動かし、`Thread.interrupt` の 1 秒後もスレッドは動いていた |
+
+止めたあとの 64×64 の変換は、どれも正しく動いた (13〜33 ms)。
+
+### 大きさごとの時間 (2026-11-27、クラウドの 4 コア VM、OpenJDK 21.0.13、ISOLATED)
+
+ぼかしの半径は 2。JIT を温めてから各 7 回測った中央値を、3 回走らせた範囲で書いている。「うち受け渡し」は、入力を持ち込んで出力と同じ長さの配列を返すだけのブロックの時間。
+
+| 画像 | 入力 | 出力 | JVM | wasmIsolated | うち受け渡し |
+|---|---|---|---|---|---|
+| 16×16 QOI | 715 B | 393 B | 0.01 ms | 0.9〜1.0 ms | 0.9〜1.0 ms |
+| 16×16 PPM | 781 B | 393 B | 0.02 ms | 1.0 ms | 0.9 ms |
+| 32×32 QOI | 2,641 B | 1,205 B | 0.03〜0.04 ms | 3.0〜3.1 ms | 3.1〜3.2 ms |
+| 32×32 PPM | 3,085 B | 1,205 B | 0.07 ms | 3.6〜3.7 ms | 3.5〜3.6 ms |
+| 64×64 QOI | 5,525 B | 3,499 B | 0.13〜0.15 ms | 7.7〜7.9 ms | 6.7〜7.2 ms |
+| 64×64 PPM | 12,301 B | 3,499 B | 0.28 ms | 12.9〜13.6 ms | 14.2〜14.3 ms |
+| 128×128 QOI | 21,874 B | 12,001 B | 0.64〜0.71 ms | 29.3〜30.7 ms | 24.6〜27.2 ms |
+| 128×128 PPM | 49,167 B | 12,001 B | 0.57〜0.59 ms | 45.3〜47.1 ms | 46.9〜48.9 ms |
+| 256×256 QOI | 44,538 B | 29,280 B | 1.85〜1.94 ms | 58.3〜67.1 ms | 52.8〜64.0 ms |
+| 256×256 PPM | 196,623 B | 29,280 B | 1.75〜1.77 ms | 164.5〜170.3 ms | 162.8〜173.1 ms |
+
+- wasmIsolated の時間のほとんどは受け渡しで、1 バイトあたり約 0.7 µs (256×256 の PPM で、入力と出力の合計 225,903 バイトに 163〜173 ms)。
+- 画像処理そのものは、wasmIsolated の時間から受け渡しを引いた数 ms ほどだが、ばらつきの範囲に入るので切り分けては言えない (未確認)。
+- 圧縮した QOI のほうが PPM より入力が小さく、そのぶん速い。
+- 画像処理を入れると main.wasm は 506 KB (borer を含む)。
 
 ## 制約
 
